@@ -452,7 +452,12 @@ router.post('/group', async (req: Request, res: Response, next: NextFunction) =>
     }
 
     const testCaseIds = tcs.map((t) => t.id);
-    const resolved = await resolveScriptPaths(req.project.id, testCaseIds);
+    const rawResolved = await resolveScriptPaths(req.project.id, testCaseIds);
+    // Re-order to match sortOrder sequence (resolveScriptPaths uses script findMany which has no ordering)
+    const scriptPathMap = new Map(rawResolved.map((r) => [r.testCaseId, r.scriptPath]));
+    const resolved = testCaseIds
+      .filter((id) => scriptPathMap.has(id))
+      .map((id) => ({ testCaseId: id, scriptPath: scriptPathMap.get(id)! }));
     const scriptedIds = new Set(resolved.map((r) => r.testCaseId));
     const skippedTcIds = testCaseIds.filter((id) => !scriptedIds.has(id));
 

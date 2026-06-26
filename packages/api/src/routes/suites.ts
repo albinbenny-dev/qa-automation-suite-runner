@@ -11,6 +11,7 @@ import { addRunJob } from '../lib/queue.js';
 const SuiteStageSchema = z.object({
   useCaseTag: z.string().min(1),
   mode: z.enum(['sequential', 'parallel']),
+  testCaseIds: z.array(z.string()).optional(),
 });
 
 const CreateSuiteSchema = z.object({
@@ -182,7 +183,7 @@ router.post('/:suiteId/run', (async (req, res) => {
   const suite = await prisma.suite.findFirst({ where: { id: suiteId, projectId } });
   if (!suite) return res.status(404).json({ error: 'Suite not found' });
 
-  type StageDefinition = { useCaseTag: string; mode: 'sequential' | 'parallel' };
+  type StageDefinition = { useCaseTag: string; mode: 'sequential' | 'parallel'; testCaseIds?: string[] };
   let stageDefs: StageDefinition[];
   try {
     stageDefs = JSON.parse(suite.stages) as StageDefinition[];
@@ -200,13 +201,30 @@ router.post('/:suiteId/run', (async (req, res) => {
   const resolvedStages: Array<{ useCaseTag: string; mode: 'sequential' | 'parallel'; testCaseIds: string[]; scriptPaths: string[] }> = [];
 
   for (const stageDef of stageDefs) {
-    const tcs = await prisma.testCase.findMany({
-      where: { projectId, useCaseTag: stageDef.useCaseTag, status: { in: ['APPROVED', 'DRAFT'] } },
-      select: { id: true },
-      orderBy: { sortOrder: 'asc' },
-    });
-    const stageTcIds = tcs.map((t) => t.id);
-    const resolved = await resolveScriptPaths(projectId, stageTcIds);
+    let stageTcIds: string[];
+    if (stageDef.testCaseIds && stageDef.testCaseIds.length > 0) {
+      // Use the explicit TC list saved in the stage, but re-fetch sortOrder to preserve run order
+      const tcs = await prisma.testCase.findMany({
+        where: { id: { in: stageDef.testCaseIds }, projectId, status: { in: ['APPROVED', 'DRAFT'] } },
+        select: { id: true },
+        orderBy: { sortOrder: 'asc' },
+      });
+      stageTcIds = tcs.map((t) => t.id);
+    } else {
+      // Fall back to all TCs in the use case, sorted by sortOrder
+      const tcs = await prisma.testCase.findMany({
+        where: { projectId, useCaseTag: stageDef.useCaseTag, status: { in: ['APPROVED', 'DRAFT'] } },
+        select: { id: true },
+        orderBy: { sortOrder: 'asc' },
+      });
+      stageTcIds = tcs.map((t) => t.id);
+    }
+    const rawResolved = await resolveScriptPaths(projectId, stageTcIds);
+    // Preserve sortOrder sequence
+    const scriptPathMap = new Map(rawResolved.map((r) => [r.testCaseId, r.scriptPath]));
+    const resolved = stageTcIds
+      .filter((id) => scriptPathMap.has(id))
+      .map((id) => ({ testCaseId: id, scriptPath: scriptPathMap.get(id)! }));
     const scriptedIds = new Set(resolved.map((r) => r.testCaseId));
     const skipped = stageTcIds.filter((id) => !scriptedIds.has(id));
 

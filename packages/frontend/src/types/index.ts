@@ -123,6 +123,8 @@ export interface Schedule {
 export interface SuiteStage {
   useCaseTag: string;
   mode: 'sequential' | 'parallel';
+  /** Explicit TC IDs to run — if omitted the suite run will use all TCs in the use case */
+  testCaseIds?: string[];
 }
 
 export interface Suite {

@@ -763,23 +763,50 @@ function SuiteForm({ mode, initial, testCases, onSave, onCancel: _onCancel, isSa
 }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [stages, setStages] = useState<SuiteStage[]>(initial?.stages ?? []);
+  const [expandedStages, setExpandedStages] = useState<Set<number>>(new Set());
   const dragFromRef = useRef<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
-  // Derive unique use cases with TC counts
-  const useCaseInfo = useMemo(() => {
-    const map = new Map<string, number>();
+  // Derive unique use cases with their TCs
+  const useCaseMap = useMemo(() => {
+    const map = new Map<string, TestCase[]>();
     for (const tc of testCases) {
-      if (tc.useCaseTag) map.set(tc.useCaseTag, (map.get(tc.useCaseTag) ?? 0) + 1);
+      if (tc.useCaseTag) {
+        if (!map.has(tc.useCaseTag)) map.set(tc.useCaseTag, []);
+        map.get(tc.useCaseTag)!.push(tc);
+      }
     }
-    return Array.from(map.entries()).map(([tag, count]) => ({ tag, count }));
+    return map;
   }, [testCases]);
+
+  const useCaseInfo = useMemo(() =>
+    Array.from(useCaseMap.entries()).map(([tag, tcs]) => ({ tag, count: tcs.length, tcs })),
+  [useCaseMap]);
 
   const stageTagSet = useMemo(() => new Set(stages.map(s => s.useCaseTag)), [stages]);
 
   function addStage(tag: string) {
     if (stageTagSet.has(tag)) return;
-    setStages(prev => [...prev, { useCaseTag: tag, mode: 'sequential' }]);
+    const allIds = (useCaseMap.get(tag) ?? []).map(tc => tc.id);
+    setStages(prev => [...prev, { useCaseTag: tag, mode: 'sequential', testCaseIds: allIds }]);
+  }
+
+  function toggleTcInStage(stageIdx: number, tcId: string) {
+    setStages(prev => prev.map((s, i) => {
+      if (i !== stageIdx) return s;
+      const current = s.testCaseIds ?? (useCaseMap.get(s.useCaseTag) ?? []).map(tc => tc.id);
+      const next = current.includes(tcId) ? current.filter(id => id !== tcId) : [...current, tcId];
+      return { ...s, testCaseIds: next };
+    }));
+  }
+
+  function toggleAllTcsInStage(stageIdx: number, allTcIds: string[]) {
+    setStages(prev => prev.map((s, i) => {
+      if (i !== stageIdx) return s;
+      const current = s.testCaseIds ?? allTcIds;
+      const allSelected = allTcIds.every(id => current.includes(id));
+      return { ...s, testCaseIds: allSelected ? [] : [...allTcIds] };
+    }));
   }
 
   function removeStage(idx: number) {
@@ -898,61 +925,105 @@ function SuiteForm({ mode, initial, testCases, onSave, onCancel: _onCancel, isSa
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
             {stages.map((stage, idx) => {
-              const tcCount = useCaseInfo.find(u => u.tag === stage.useCaseTag)?.count ?? 0;
+              const ucTcs = useCaseMap.get(stage.useCaseTag) ?? [];
+              const allUcIds = ucTcs.map(tc => tc.id);
+              const selectedIds = stage.testCaseIds ?? allUcIds;
+              const selectedCount = selectedIds.length;
+              const isExpanded = expandedStages.has(idx);
+              const allChecked = allUcIds.every(id => selectedIds.includes(id));
               return (
                 <div
                   key={stage.useCaseTag}
-                  draggable
-                  onDragStart={() => handleDragStart(idx)}
-                  onDragOver={(e) => handleDragOver(e, idx)}
-                  onDrop={() => handleDrop(idx)}
-                  onDragEnd={() => { setDragOverIdx(null); dragFromRef.current = null; }}
                   style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
                     background: 'var(--surface3)', borderRadius: 7,
                     border: `1px solid ${dragOverIdx === idx ? 'var(--cyan)' : 'var(--border)'}`,
-                    padding: '7px 10px',
                     borderLeft: `3px solid ${stage.mode === 'parallel' ? 'var(--violet)' : 'var(--emerald)'}`,
+                    overflow: 'hidden',
                   }}
                 >
-                  {/* Drag handle */}
-                  <span style={{ color: 'var(--text-dim)', opacity: 0.5, cursor: 'grab', fontSize: 14, userSelect: 'none' }}>⠿</span>
-
-                  {/* Stage index */}
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', minWidth: 18, flexShrink: 0 }}>
-                    {idx + 1}.
-                  </span>
-
-                  {/* Name + count */}
-                  <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {stage.useCaseTag}
-                  </span>
-                  <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0 }}>{tcCount} TC{tcCount !== 1 ? 's' : ''}</span>
-
-                  {/* Seq/Par toggle */}
-                  <button
-                    type="button"
-                    onClick={() => toggleMode(idx)}
-                    style={{
+                  {/* Stage header row */}
+                  <div
+                    draggable
+                    onDragStart={() => handleDragStart(idx)}
+                    onDragOver={(e) => handleDragOver(e, idx)}
+                    onDrop={() => handleDrop(idx)}
+                    onDragEnd={() => { setDragOverIdx(null); dragFromRef.current = null; }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px' }}
+                  >
+                    <span style={{ color: 'var(--text-dim)', opacity: 0.5, cursor: 'grab', fontSize: 14, userSelect: 'none' }}>⠿</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', minWidth: 18, flexShrink: 0 }}>{idx + 1}.</span>
+                    <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {stage.useCaseTag}
+                    </span>
+                    {/* TC count / selection */}
+                    <button
+                      type="button"
+                      onClick={() => setExpandedStages(prev => {
+                        const n = new Set(prev);
+                        if (n.has(idx)) n.delete(idx); else n.add(idx);
+                        return n;
+                      })}
+                      style={{
+                        padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                        background: selectedCount < allUcIds.length ? 'rgba(245,158,11,0.1)' : 'transparent',
+                        border: `1px solid ${selectedCount < allUcIds.length ? 'rgba(245,158,11,0.3)' : 'var(--border)'}`,
+                        color: selectedCount < allUcIds.length ? 'var(--amber)' : 'var(--text-dim)',
+                        flexShrink: 0, whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {selectedCount}/{allUcIds.length} TCs {isExpanded ? '▲' : '▼'}
+                    </button>
+                    <button type="button" onClick={() => toggleMode(idx)} style={{
                       padding: '3px 9px', borderRadius: 20, fontSize: 10, fontWeight: 700, cursor: 'pointer',
                       background: stage.mode === 'parallel' ? 'rgba(139,92,246,0.12)' : 'rgba(42,157,143,0.1)',
                       border: `1px solid ${stage.mode === 'parallel' ? 'rgba(139,92,246,0.3)' : 'rgba(42,157,143,0.25)'}`,
                       color: stage.mode === 'parallel' ? 'var(--violet)' : 'var(--pass)',
                       flexShrink: 0, whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {stage.mode === 'parallel' ? '⚡ Parallel' : '→ Sequential'}
-                  </button>
+                    }}>
+                      {stage.mode === 'parallel' ? '⚡ Parallel' : '→ Sequential'}
+                    </button>
+                    <button type="button" onClick={() => moveUp(idx)} disabled={idx === 0}
+                      style={{ background: 'none', border: 'none', color: idx === 0 ? 'var(--border)' : 'var(--text-dim)', cursor: idx === 0 ? 'default' : 'pointer', padding: '2px 4px', fontSize: 12 }}>▲</button>
+                    <button type="button" onClick={() => moveDown(idx)} disabled={idx === stages.length - 1}
+                      style={{ background: 'none', border: 'none', color: idx === stages.length - 1 ? 'var(--border)' : 'var(--text-dim)', cursor: idx === stages.length - 1 ? 'default' : 'pointer', padding: '2px 4px', fontSize: 12 }}>▼</button>
+                    <button type="button" onClick={() => removeStage(idx)}
+                      style={{ background: 'none', border: 'none', color: 'var(--fail)', cursor: 'pointer', padding: '2px 4px', fontSize: 13, opacity: 0.7 }}>✕</button>
+                  </div>
 
-                  {/* Up/Down */}
-                  <button type="button" onClick={() => moveUp(idx)} disabled={idx === 0}
-                    style={{ background: 'none', border: 'none', color: idx === 0 ? 'var(--border)' : 'var(--text-dim)', cursor: idx === 0 ? 'default' : 'pointer', padding: '2px 4px', fontSize: 12 }}>▲</button>
-                  <button type="button" onClick={() => moveDown(idx)} disabled={idx === stages.length - 1}
-                    style={{ background: 'none', border: 'none', color: idx === stages.length - 1 ? 'var(--border)' : 'var(--text-dim)', cursor: idx === stages.length - 1 ? 'default' : 'pointer', padding: '2px 4px', fontSize: 12 }}>▼</button>
-
-                  {/* Remove */}
-                  <button type="button" onClick={() => removeStage(idx)}
-                    style={{ background: 'none', border: 'none', color: 'var(--fail)', cursor: 'pointer', padding: '2px 4px', fontSize: 13, opacity: 0.7 }}>✕</button>
+                  {/* Expanded TC list */}
+                  {isExpanded && (
+                    <div style={{ borderTop: '1px solid var(--border)', padding: '6px 10px 8px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      {/* Select all / none */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                        <input
+                          type="checkbox"
+                          checked={allChecked}
+                          onChange={() => toggleAllTcsInStage(idx, allUcIds)}
+                          style={{ cursor: 'pointer', accentColor: 'var(--cyan)' }}
+                        />
+                        <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          {allChecked ? 'Deselect all' : 'Select all'}
+                        </span>
+                      </div>
+                      {ucTcs.map(tc => {
+                        const checked = selectedIds.includes(tc.id);
+                        return (
+                          <label key={tc.id} style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', padding: '3px 4px', borderRadius: 4, background: checked ? 'rgba(37,99,171,0.06)' : 'transparent' }}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleTcInStage(idx, tc.id)}
+                              style={{ cursor: 'pointer', accentColor: 'var(--cyan)', flexShrink: 0 }}
+                            />
+                            <span style={{ fontSize: 11, color: checked ? 'var(--text)' : 'var(--text-dim)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {tc.title}
+                            </span>
+                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', flexShrink: 0 }}>{tc.tcId}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}
