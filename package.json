@@ -1,0 +1,32 @@
+{
+  "name": "qa-automation-suite-runner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Autonomous AI-powered QA automation platform",
+  "scripts": {
+    "dev": "concurrently -n api,ui -c cyan,magenta \"pnpm --filter @qaasr/api dev\" \"pnpm --filter @qaasr/frontend dev\"",
+    "build": "pnpm --filter @qaasr/api build && pnpm --filter @qaasr/frontend build",
+    "type-check": "pnpm --filter @qaasr/api tsc --noEmit && pnpm --filter @qaasr/frontend type-check",
+    "docker:up": "docker compose up --build",
+    "docker:up:detach": "docker compose up --build -d",
+    "docker:down": "docker compose down",
+    "docker:rebuild": "docker compose up --build -d",
+    "docker:logs": "docker compose logs -f",
+    "docker:logs:api": "docker compose logs -f qaasr-api",
+    "docker:reset": "docker compose down -v && docker compose up --build -d"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "pnpm": "9.15.9"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "9.15.9",
+      "onFail": "error"
+    }
+  }
+}

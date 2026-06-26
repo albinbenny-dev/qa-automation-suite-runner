@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-bg-base text-text-primary;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-bg-base;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border-subtle rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-text-muted;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-accent-cyan text-bg-base font-semibold px-4 py-2 rounded-lg
+           hover:bg-cyan-300 transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-bg-surface text-text-primary font-medium px-4 py-2 rounded-lg border border-border-subtle
+           hover:border-accent-cyan hover:text-accent-cyan transition-colors duration-150;
+  }
+
+  .card {
+    @apply bg-bg-surface border border-border-subtle rounded-xl p-4;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium;
+  }
+
+  .badge-cyan {
+    @apply badge bg-cyan-950 text-accent-cyan border border-cyan-800;
+  }
+
+  .badge-violet {
+    @apply badge bg-violet-950 text-accent-violet border border-violet-800;
+  }
+
+  .badge-green {
+    @apply badge bg-emerald-950 text-accent-green border border-emerald-800;
+  }
+
+  .badge-red {
+    @apply badge bg-red-950 text-accent-red border border-red-800;
+  }
+
+  .badge-amber {
+    @apply badge bg-amber-950 text-accent-amber border border-amber-800;
+  }
+}

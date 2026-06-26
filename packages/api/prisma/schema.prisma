@@ -1,0 +1,230 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// All enum-like fields use String with application-level validation (Zod).
+// Valid values are documented in comments and enforced by Zod schemas.
+
+// ── Models ─────────────────────────────────────────────────────────────────
+
+model User {
+  id           String          @id @default(cuid())
+  email        String          @unique
+  name         String
+  passwordHash String
+  globalRole   String          @default("STANDARD_USER")   // "SUPER_ADMIN" | "ADMIN" | "SUPER_USER" | "STANDARD_USER"
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  memberships  ProjectMember[]
+  projects     Project[]       @relation("CreatedBy")
+}
+
+model Project {
+  id              String           @id @default(cuid())
+  name            String
+  slug            String           @unique
+  description     String?
+  baseUrl         String?
+  color           String           @default("#22d3ee")
+  reqLibraryPath  String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  createdBy       String
+  creator         User             @relation("CreatedBy", fields: [createdBy], references: [id])
+
+  members         ProjectMember[]
+  envConfigs      EnvConfig[]
+  testCases       TestCase[]
+  scripts         Script[]
+  runs            Run[]
+  schedules       Schedule[]
+  suites          Suite[]
+  reports         Report[]
+  resources       ProjectResource[]
+
+  @@index([createdBy])
+}
+
+model ProjectMember {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  role      String   @default("SUPER_USER")  // "ADMIN" | "SUPER_USER" | "STANDARD_USER"
+  createdAt DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+
+model EnvConfig {
+  id        String   @id @default(cuid())
+  projectId String
+  name      String
+  baseUrl   String
+  username  String?
+  password  String?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, name])
+  @@index([projectId])
+}
+
+model TestCase {
+  id               String     @id @default(cuid())
+  projectId        String
+  tcId             String
+  title            String
+  description      String?
+  steps            String     @default("[]")
+  expectedResult   String
+  type             String     @default("UI")       // "UI" | "API" | "SIT"
+  tags             String     @default("[]")
+  useCaseTag       String?
+  status           String     @default("DRAFT")    // "DRAFT" | "APPROVED" | "DEPRECATED"
+  priority         String     @default("MEDIUM")   // "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+  sourceRef        String?
+  generationHints  String?
+  prerequisiteTcId String?
+  prerequisiteTc   TestCase?  @relation("PrerequisiteOf", fields: [prerequisiteTcId], references: [id], onDelete: SetNull)
+  dependentTcs     TestCase[] @relation("PrerequisiteOf")
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+  project          Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scripts          Script[]
+  runResults       RunResult[]
+
+  @@unique([projectId, tcId])
+  @@index([projectId])
+  @@index([projectId, useCaseTag])
+  @@index([projectId, status])
+  @@index([projectId, type])
+}
+
+model Script {
+  id             String    @id @default(cuid())
+  projectId      String
+  testCaseId     String?
+  filename       String
+  content        String
+  scriptType     String    @default("ROBOT")      // "ROBOT"
+  isCustomUpload Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  testCase       TestCase? @relation(fields: [testCaseId], references: [id], onDelete: SetNull)
+  runResults     RunResult[]
+
+  @@unique([projectId, filename])
+  @@index([projectId])
+  @@index([testCaseId])
+}
+
+model Run {
+  id              String      @id @default(cuid())
+  projectId       String
+  runSeq          Int         @default(0)          // global auto-increment assigned at creation
+  name            String
+  environment     String
+  status          String      @default("PENDING")  // "PENDING" | "RUNNING" | "PASSED" | "FAILED" | "CANCELLED"
+  startedAt       DateTime?
+  completedAt     DateTime?
+  triggerType     String      @default("MANUAL")   // "MANUAL" | "SCHEDULED" | "INDIVIDUAL" | "GROUP"
+  createdAt       DateTime    @default(now())
+  createdByUserId String?
+  project         Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  results         RunResult[]
+  report          Report?
+
+  @@index([projectId])
+  @@index([projectId, status])
+  @@index([projectId, createdAt])
+}
+
+model RunResult {
+  id             String   @id @default(cuid())
+  runId          String
+  testCaseId     String
+  scriptId       String?
+  status         String   // "PENDING" | "RUNNING" | "PASSED" | "FAILED" | "CANCELLED" | "SKIPPED"
+  duration       Int?
+  errorMessage   String?
+  screenshotPath String?
+  videoPath      String?
+  rfReportPath   String?
+  rfLogPath      String?
+  createdAt      DateTime @default(now())
+  run            Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  testCase       TestCase @relation(fields: [testCaseId], references: [id], onDelete: Cascade)
+  script         Script?  @relation(fields: [scriptId], references: [id], onDelete: SetNull)
+
+  @@unique([runId, testCaseId])
+  @@index([runId])
+  @@index([testCaseId])
+}
+
+model Schedule {
+  id              String   @id @default(cuid())
+  projectId       String
+  name            String
+  cronExpression  String
+  testCaseIds     String   @default("[]")
+  environment     String
+  isActive        Boolean  @default(true)
+  emailRecipients String   @default("[]")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([projectId, isActive])
+}
+
+model Suite {
+  id          String   @id @default(cuid())
+  projectId   String
+  name        String
+  testCaseIds String   @default("[]")  // JSON: string[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model Report {
+  id          String    @id @default(cuid())
+  projectId   String
+  runId       String    @unique
+  summary     String
+  aiAnalysis  String
+  emailSentAt DateTime?
+  createdAt   DateTime  @default(now())
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  run         Run       @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model ProjectResource {
+  id           String   @id @default(cuid())
+  projectId    String
+  filename     String
+  originalName String
+  size         Int
+  uploadedAt   DateTime @default(now())
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, filename])
+  @@index([projectId])
+}
