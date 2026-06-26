@@ -99,6 +99,7 @@ model TestCase {
   prerequisiteTcId String?
   prerequisiteTc   TestCase?  @relation("PrerequisiteOf", fields: [prerequisiteTcId], references: [id], onDelete: SetNull)
   dependentTcs     TestCase[] @relation("PrerequisiteOf")
+  sortOrder        Int        @default(0)
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
   project          Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -195,7 +196,8 @@ model Suite {
   id          String   @id @default(cuid())
   projectId   String
   name        String
-  testCaseIds String   @default("[]")  // JSON: string[]
+  testCaseIds String   @default("[]")  // JSON: string[] (legacy, kept for migration)
+  stages      String   @default("[]")  // JSON: { useCaseTag: string; mode: 'sequential'|'parallel' }[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)

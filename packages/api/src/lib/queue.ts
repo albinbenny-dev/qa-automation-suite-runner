@@ -18,6 +18,13 @@ const connection = parseRedisUrl(process.env.REDIS_URL ?? 'redis://localhost:637
 
 export const testRunQueue = new Queue('test-runs', { connection });
 
+export interface SuiteStagePayload {
+  useCaseTag: string;
+  mode: 'sequential' | 'parallel';
+  testCaseIds: string[];
+  scriptPaths: string[];
+}
+
 export interface RunJobPayload {
   runId: string;
   runSeq: number;
@@ -25,6 +32,8 @@ export interface RunJobPayload {
   testCaseIds: string[];
   scriptPaths: string[];
   skippedTcIds?: string[];
+  /** Present only for SUITE runs — drives stage-aware execution */
+  stages?: SuiteStagePayload[];
   environment: string;
   envBaseUrl: string;
   envUsername?: string;
@@ -33,7 +42,7 @@ export interface RunJobPayload {
   headless: boolean;
   browser: 'chrome' | 'firefox';
   record?: boolean;
-  triggerType: 'MANUAL' | 'SCHEDULED' | 'INDIVIDUAL' | 'GROUP' | 'HEAL_RERUN';
+  triggerType: 'MANUAL' | 'SCHEDULED' | 'INDIVIDUAL' | 'GROUP' | 'HEAL_RERUN' | 'SUITE';
 }
 
 export async function addRunJob(payload: RunJobPayload): Promise<void> {

@@ -8,12 +8,20 @@ import { addRunJob } from '../lib/queue.js';
 
 // ── Zod schemas ────────────────────────────────────────────────────────────
 
-const CreateSuiteSchema = z.object({
-  name: z.string().min(1).max(100),
-  testCaseIds: z.array(z.string()).min(1),
+const SuiteStageSchema = z.object({
+  useCaseTag: z.string().min(1),
+  mode: z.enum(['sequential', 'parallel']),
 });
 
-const UpdateSuiteSchema = CreateSuiteSchema.partial();
+const CreateSuiteSchema = z.object({
+  name: z.string().min(1).max(100),
+  stages: z.array(SuiteStageSchema).min(1),
+});
+
+const UpdateSuiteSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  stages: z.array(SuiteStageSchema).optional(),
+});
 
 const RunSuiteSchema = z.object({
   environment:     z.string().min(1),
@@ -108,12 +116,12 @@ router.post('/', (async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
-  const { name, testCaseIds } = parsed.data;
+  const { name, stages } = parsed.data;
   const suite = await prisma.suite.create({
     data: {
       projectId,
       name,
-      testCaseIds: JSON.stringify(testCaseIds),
+      stages: JSON.stringify(stages),
     },
   });
   res.status(201).json({ suite });
@@ -133,7 +141,7 @@ router.put('/:suiteId', (async (req, res) => {
 
   const data: Record<string, unknown> = {};
   if (parsed.data.name !== undefined) data.name = parsed.data.name;
-  if (parsed.data.testCaseIds !== undefined) data.testCaseIds = JSON.stringify(parsed.data.testCaseIds);
+  if (parsed.data.stages !== undefined) data.stages = JSON.stringify(parsed.data.stages);
 
   const suite = await prisma.suite.update({ where: { id: suiteId }, data });
   res.json({ suite });
@@ -170,30 +178,54 @@ router.post('/:suiteId/run', (async (req, res) => {
   }
   const { environment, parallelWorkers, headless, browser, name } = parsed.data;
 
-  // 2. Load suite and decode its test case list
+  // 2. Load suite and decode its stages
   const suite = await prisma.suite.findFirst({ where: { id: suiteId, projectId } });
   if (!suite) return res.status(404).json({ error: 'Suite not found' });
 
-  let testCaseIds: string[];
+  type StageDefinition = { useCaseTag: string; mode: 'sequential' | 'parallel' };
+  let stageDefs: StageDefinition[];
   try {
-    testCaseIds = JSON.parse(suite.testCaseIds) as string[];
+    stageDefs = JSON.parse(suite.stages) as StageDefinition[];
   } catch {
-    return res.status(500).json({ error: 'Suite testCaseIds is corrupted — re-save the suite.' });
+    return res.status(500).json({ error: 'Suite stages data is corrupted — re-save the suite.' });
   }
 
-  if (testCaseIds.length === 0) {
-    return res.status(400).json({ error: `Suite "${suite.name}" has no test cases. Add test cases to the suite first.` });
+  if (stageDefs.length === 0) {
+    return res.status(400).json({ error: `Suite "${suite.name}" has no stages. Add use cases to the suite first.` });
   }
 
-  // 3. Resolve which TC IDs have automation scripts
-  const resolved = await resolveScriptPaths(projectId, testCaseIds);
-  const scriptedIds = new Set(resolved.map((r) => r.testCaseId));
-  const skippedTcIds = testCaseIds.filter((id) => !scriptedIds.has(id));
+  // 3. For each stage, fetch TCs ordered by sortOrder and resolve script paths
+  const allTestCaseIds: string[] = [];
+  const allSkippedTcIds: string[] = [];
+  const resolvedStages: Array<{ useCaseTag: string; mode: 'sequential' | 'parallel'; testCaseIds: string[]; scriptPaths: string[] }> = [];
 
-  if (resolved.length === 0) {
+  for (const stageDef of stageDefs) {
+    const tcs = await prisma.testCase.findMany({
+      where: { projectId, useCaseTag: stageDef.useCaseTag, status: { in: ['APPROVED', 'DRAFT'] } },
+      select: { id: true },
+      orderBy: { sortOrder: 'asc' },
+    });
+    const stageTcIds = tcs.map((t) => t.id);
+    const resolved = await resolveScriptPaths(projectId, stageTcIds);
+    const scriptedIds = new Set(resolved.map((r) => r.testCaseId));
+    const skipped = stageTcIds.filter((id) => !scriptedIds.has(id));
+
+    allTestCaseIds.push(...resolved.map((r) => r.testCaseId));
+    allSkippedTcIds.push(...skipped);
+
+    if (resolved.length > 0) {
+      resolvedStages.push({
+        useCaseTag: stageDef.useCaseTag,
+        mode: stageDef.mode,
+        testCaseIds: resolved.map((r) => r.testCaseId),
+        scriptPaths: resolved.map((r) => r.scriptPath),
+      });
+    }
+  }
+
+  if (allTestCaseIds.length === 0) {
     return res.status(400).json({
-      error: `None of the ${testCaseIds.length} test case(s) in suite "${suite.name}" have automation scripts. Generate scripts first.`,
-      skippedCount: skippedTcIds.length,
+      error: `None of the test cases in suite "${suite.name}" have automation scripts. Generate scripts first.`,
     });
   }
 
@@ -213,14 +245,15 @@ router.post('/:suiteId/run', (async (req, res) => {
     },
   });
 
-  // 5. Enqueue the job (same BullMQ pipeline as every other trigger type)
+  // 5. Enqueue the job with stage info for stage-aware execution
   await addRunJob({
     runId:          run.id,
     runSeq,
     projectId,
-    testCaseIds:    resolved.map((r) => r.testCaseId),
-    scriptPaths:    resolved.map((r) => r.scriptPath),
-    skippedTcIds,
+    testCaseIds:    allTestCaseIds,
+    scriptPaths:    resolvedStages.flatMap((s) => s.scriptPaths),
+    skippedTcIds:   allSkippedTcIds,
+    stages:         resolvedStages,
     environment,
     envBaseUrl:     envConfig.baseUrl,
     envUsername:    envConfig.username,
@@ -229,18 +262,18 @@ router.post('/:suiteId/run', (async (req, res) => {
     headless,
     browser,
     triggerType:    'SUITE',
+    record:         req.project.videoEnabled !== false,
   });
 
   // 6. Return run record so the caller can poll status
   return res.status(201).json({
     run,
     meta: {
-      totalTestCases: testCaseIds.length,
-      scriptedCount:  resolved.length,
-      skippedCount:   skippedTcIds.length,
-      ...(skippedTcIds.length > 0 && {
-        skippedTcIds,
-        warning: `${skippedTcIds.length} test case(s) skipped — no automation script found.`,
+      totalStages:    resolvedStages.length,
+      scriptedCount:  allTestCaseIds.length,
+      skippedCount:   allSkippedTcIds.length,
+      ...(allSkippedTcIds.length > 0 && {
+        warning: `${allSkippedTcIds.length} test case(s) skipped — no automation script found.`,
       }),
     },
   });

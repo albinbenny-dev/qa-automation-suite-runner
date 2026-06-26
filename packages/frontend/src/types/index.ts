@@ -61,6 +61,7 @@ export interface TestCase {
   projectId: string;
   tcId: string;
   title: string;
+  sortOrder?: number;
   description?: string;
   steps: string[];
   expectedResult?: string;
@@ -119,11 +120,17 @@ export interface Schedule {
   updatedAt: string;
 }
 
+export interface SuiteStage {
+  useCaseTag: string;
+  mode: 'sequential' | 'parallel';
+}
+
 export interface Suite {
   id: string;
   projectId: string;
   name: string;
-  testCaseIds: string; // JSON string — parse with JSON.parse
+  testCaseIds: string; // JSON string — legacy
+  stages: string;     // JSON string — parse to SuiteStage[]
   createdAt: string;
   updatedAt: string;
 }

@@ -444,6 +444,7 @@ router.post('/group', async (req: Request, res: Response, next: NextFunction) =>
     const tcs = await prisma.testCase.findMany({
       where: { projectId: req.project.id, useCaseTag, status: { in: ['APPROVED', 'DRAFT'] } },
       select: { id: true },
+      orderBy: { sortOrder: 'asc' },
     });
     if (tcs.length === 0) {
       res.status(400).json({ error: `No test cases found in use case group "${useCaseTag}"` });

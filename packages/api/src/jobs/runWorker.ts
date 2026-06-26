@@ -17,6 +17,7 @@ interface RFReport {
 // ── Main job processor ─────────────────────────────────────────────────────
 async function processRunJob(job: Job<RunJobPayload>): Promise<void> {
   const { runId, runSeq, projectId, testCaseIds, scriptPaths, skippedTcIds = [],
+    stages,
     environment, envBaseUrl,
     envUsername = '', envPassword = '', parallelWorkers, headless, browser, record = false } = job.data;
 
@@ -125,26 +126,23 @@ async function processRunJob(job: Job<RunJobPayload>): Promise<void> {
     } catch { /* DB hiccup — keep polling */ }
   }, 2000);
 
-  // ── 5. Execute each script ───────────────────────────────────────────────
-  for (let i = 0; i < scriptPaths.length; i++) {
-    const scriptPath = scriptPaths[i];
-    const testCaseId = testCaseIds[i];
+  // ── Helper: execute a single script and update its RunResult ────────────
+  async function executeScript(
+    testCaseId: string,
+    scriptPath: string,
+    scriptIndex: number,
+  ): Promise<void> {
     const scriptName = path.basename(scriptPath);
     const runResultId = tcIdToRunResultId.get(testCaseId);
 
-    if (runAbortController.signal.aborted) {
-      emitLog(runId, 'warn', `■ Run cancelled — skipping remaining ${scriptPaths.length - i} scripts`);
-      break;
-    }
-
-    emitLog(runId, 'run', `→ [W${(i % parallelWorkers) + 1}] ${scriptName}`);
+    emitLog(runId, 'run', `→ [W${(scriptIndex % parallelWorkers) + 1}] ${scriptName}`);
 
     if (runResultId) {
       await prisma.runResult.update({ where: { id: runResultId }, data: { status: 'RUNNING' } });
     }
-    emitToRun(runId, 'run:progress', { testCaseId, status: 'RUNNING', index: i, total });
+    emitToRun(runId, 'run:progress', { testCaseId, status: 'RUNNING', index: scriptIndex, total });
 
-    const tcLabel = tcReadableId.get(testCaseId) ?? `tc-${i}`;
+    const tcLabel = tcReadableId.get(testCaseId) ?? `tc-${scriptIndex}`;
     const reportFile = path.join(artifactsDir, `${runLabel}_${tcLabel}_report.json`);
     const outputDir = path.join(artifactsDir, `${runLabel}_${tcLabel}`);
 
@@ -165,11 +163,9 @@ async function processRunJob(job: Job<RunJobPayload>): Promise<void> {
           data: { status: 'FAILED', errorMessage: 'Run was cancelled' },
         });
       }
-      emitLog(runId, 'warn', '■ Run cancelled during script execution');
-      break;
+      return;
     }
 
-    // Parse RF report
     let passed = false;
     let duration = 0;
     let errorMessage: string | undefined;
@@ -223,9 +219,55 @@ async function processRunJob(job: Job<RunJobPayload>): Promise<void> {
     }
 
     emitToRun(runId, 'run:progress', {
-      testCaseId, status: finalStatus, index: i, total,
+      testCaseId, status: finalStatus, index: scriptIndex, total,
       passed: totalPassed, failed: totalFailed,
     });
+  }
+
+  // ── 5. Execute scripts — stage-aware or flat sequential ─────────────────
+  if (stages && stages.length > 0) {
+    // Stage-based execution: each stage runs after the previous one completes.
+    // Within a stage: sequential mode = one-by-one, parallel mode = all at once.
+    let globalIndex = 0;
+    for (const stage of stages) {
+      if (runAbortController.signal.aborted) break;
+      const stageLabel = stage.mode === 'parallel'
+        ? `⚡ Stage [${stage.useCaseTag}] — ${stage.testCaseIds.length} TCs parallel`
+        : `→ Stage [${stage.useCaseTag}] — ${stage.testCaseIds.length} TCs sequential`;
+      emitLog(runId, 'info', stageLabel);
+
+      if (stage.mode === 'parallel') {
+        await Promise.all(
+          stage.testCaseIds.map((tcId, idx) =>
+            executeScript(tcId, stage.scriptPaths[idx], globalIndex + idx),
+          ),
+        );
+        globalIndex += stage.testCaseIds.length;
+      } else {
+        for (let idx = 0; idx < stage.testCaseIds.length; idx++) {
+          if (runAbortController.signal.aborted) break;
+          await executeScript(stage.testCaseIds[idx], stage.scriptPaths[idx], globalIndex + idx);
+          if (runAbortController.signal.aborted) {
+            emitLog(runId, 'warn', '■ Run cancelled during script execution');
+            break;
+          }
+        }
+        globalIndex += stage.testCaseIds.length;
+      }
+    }
+  } else {
+    // Flat sequential execution (non-suite runs)
+    for (let i = 0; i < scriptPaths.length; i++) {
+      if (runAbortController.signal.aborted) {
+        emitLog(runId, 'warn', `■ Run cancelled — skipping remaining ${scriptPaths.length - i} scripts`);
+        break;
+      }
+      await executeScript(testCaseIds[i], scriptPaths[i], i);
+      if (runAbortController.signal.aborted) {
+        emitLog(runId, 'warn', '■ Run cancelled during script execution');
+        break;
+      }
+    }
   }
 
   clearInterval(cancelWatcher);

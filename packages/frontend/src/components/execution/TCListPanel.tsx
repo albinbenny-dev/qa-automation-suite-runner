@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import type { TestCase } from '../../types';
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -50,6 +50,7 @@ interface TCListPanelProps {
   onStopIndividual?: (tc: TestCase) => void;
   onViewTc: (tc: TestCase) => void;
   onDuplicateTc: (tc: TestCase) => void;
+  onReorderTcs?: (useCaseTag: string, orderedIds: string[]) => void;
   isRunning: boolean;
 }
 
@@ -68,6 +69,7 @@ export default function TCListPanel({
   onRunIndividual,
   onViewTc,
   onDuplicateTc,
+  onReorderTcs,
   isRunning,
 }: TCListPanelProps) {
   const [viewMode, setViewMode] = useState<'usecase' | 'flat'>('usecase');
@@ -101,7 +103,11 @@ export default function TCListPanel({
     }
     return Array.from(map.entries())
       .filter(([, tcs]) => tcs.length > 0)
-      .map(([name, tcs], i) => ({ name, tcs, color: getUcColor(name, i) }));
+      .map(([name, tcs], i) => ({
+        name,
+        tcs: [...tcs].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)),
+        color: getUcColor(name, i),
+      }));
   }, [filtered, useCases]);
 
   const totalVisible = filtered.length;
@@ -312,6 +318,7 @@ export default function TCListPanel({
               onRunIndividual={onRunIndividual}
               onViewTc={onViewTc}
               onDuplicateTc={onDuplicateTc}
+              onReorder={onReorderTcs ? (ids) => onReorderTcs(group.name, ids) : undefined}
             />
           ))
         ) : (
@@ -338,6 +345,7 @@ export default function TCListPanel({
 function UseCaseGroupRow({
   group, groupIndex: _groupIndex, expanded, selectedIds, runningTcIds, scriptedTcIds: _scriptedTcIds,
   isRunning, onToggleExpand, onToggleTc, onToggleGroup, onRunGroup, onRunIndividual, onViewTc, onDuplicateTc,
+  onReorder,
 }: {
   group: { name: string; tcs: TestCase[]; color: string };
   groupIndex: number;
@@ -353,13 +361,51 @@ function UseCaseGroupRow({
   onRunIndividual: (tc: TestCase) => void;
   onViewTc: (tc: TestCase) => void;
   onDuplicateTc: (tc: TestCase) => void;
+  onReorder?: (orderedIds: string[]) => void;
 }) {
-  const ids = group.tcs.map((tc) => tc.id);
+  const [localTcs, setLocalTcs] = useState<TestCase[]>(group.tcs);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const dragIdRef = useRef<string | null>(null);
+
+  // Sync local order when group.tcs changes (e.g. after API refetch)
+  useMemo(() => { setLocalTcs(group.tcs); }, [group.tcs]);
+
+  function handleDragStart(tc: TestCase) {
+    dragIdRef.current = tc.id;
+  }
+
+  function handleDragOver(e: React.DragEvent, targetId: string) {
+    e.preventDefault();
+    setDragOverId(targetId);
+  }
+
+  function handleDrop(targetId: string) {
+    const fromId = dragIdRef.current;
+    setDragOverId(null);
+    dragIdRef.current = null;
+    if (!fromId || fromId === targetId) return;
+
+    const newTcs = [...localTcs];
+    const fromIdx = newTcs.findIndex((t) => t.id === fromId);
+    const toIdx = newTcs.findIndex((t) => t.id === targetId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const [moved] = newTcs.splice(fromIdx, 1);
+    newTcs.splice(toIdx, 0, moved);
+    setLocalTcs(newTcs);
+    onReorder?.(newTcs.map((t) => t.id));
+  }
+
+  function handleDragEnd() {
+    setDragOverId(null);
+    dragIdRef.current = null;
+  }
+
+  const ids = localTcs.map((tc) => tc.id);
   const allSelected = ids.length > 0 && ids.every((id) => selectedIds.has(id));
   const someSelected = ids.some((id) => selectedIds.has(id));
-  const passCount = group.tcs.filter((tc) => tc.lastRun?.status === 'PASSED').length;
-  const failCount = group.tcs.filter((tc) => tc.lastRun?.status === 'FAILED').length;
-  const runningInGroup = group.tcs.filter((tc) => runningTcIds.has(tc.id)).length;
+  const passCount = localTcs.filter((tc) => tc.lastRun?.status === 'PASSED').length;
+  const failCount = localTcs.filter((tc) => tc.lastRun?.status === 'FAILED').length;
+  const runningInGroup = localTcs.filter((tc) => runningTcIds.has(tc.id)).length;
 
   return (
     <div>
@@ -480,20 +526,33 @@ function UseCaseGroupRow({
         </button>
       </div>
 
-      {/* TC rows */}
-      {expanded && group.tcs.map((tc) => (
-        <TCRow
+      {/* TC rows with drag-and-drop reordering */}
+      {expanded && localTcs.map((tc) => (
+        <div
           key={tc.id}
-          tc={tc}
-          isSelected={selectedIds.has(tc.id)}
-          isRunning={runningTcIds.has(tc.id)}
-          runDisabled={isRunning}
-          onToggle={() => onToggleTc(tc.id)}
-          onRun={() => onRunIndividual(tc)}
-          onView={() => onViewTc(tc)}
-          onDuplicate={() => onDuplicateTc(tc)}
-          indent
-        />
+          draggable={!!onReorder}
+          onDragStart={() => handleDragStart(tc)}
+          onDragOver={(e) => handleDragOver(e, tc.id)}
+          onDrop={() => handleDrop(tc.id)}
+          onDragEnd={handleDragEnd}
+          style={{
+            borderTop: dragOverId === tc.id ? '2px solid var(--cyan)' : '2px solid transparent',
+            cursor: onReorder ? 'grab' : undefined,
+          }}
+        >
+          <TCRow
+            tc={tc}
+            isSelected={selectedIds.has(tc.id)}
+            isRunning={runningTcIds.has(tc.id)}
+            runDisabled={isRunning}
+            onToggle={() => onToggleTc(tc.id)}
+            onRun={() => onRunIndividual(tc)}
+            onView={() => onViewTc(tc)}
+            onDuplicate={() => onDuplicateTc(tc)}
+            indent
+            isDraggable={!!onReorder}
+          />
+        </div>
       ))}
     </div>
   );
@@ -502,7 +561,7 @@ function UseCaseGroupRow({
 // ── TC row ────────────────────────────────────────────────────────────────
 function TCRow({
   tc, isSelected, isRunning, runDisabled,
-  onToggle, onRun, onView, onDuplicate, indent = false,
+  onToggle, onRun, onView, onDuplicate, indent = false, isDraggable = false,
 }: {
   tc: TestCase;
   isSelected: boolean;
@@ -513,6 +572,7 @@ function TCRow({
   onView: () => void;
   onDuplicate: () => void;
   indent?: boolean;
+  isDraggable?: boolean;
 }) {
   const chip = TYPE_CHIP[tc.type] ?? { bg: 'var(--surface3)', color: 'var(--text-dim)' };
 
@@ -533,6 +593,16 @@ function TCRow({
         cursor: 'default',
       }}
     >
+      {/* Drag handle */}
+      {isDraggable && !isRunning && (
+        <span style={{
+          color: 'var(--text-dim)', fontSize: 11, flexShrink: 0,
+          opacity: 0.4, cursor: 'grab', userSelect: 'none', lineHeight: 1,
+        }}>
+          ⠿
+        </span>
+      )}
+
       {/* Running blink dot or checkbox */}
       {isRunning ? (
         <span style={{

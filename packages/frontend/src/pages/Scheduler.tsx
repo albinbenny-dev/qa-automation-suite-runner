@@ -13,10 +13,10 @@ import {
   useRuns,
   useCreateRun,
 } from '../hooks/useRuns';
-import { useSuites, useCreateSuite, useUpdateSuite, useDeleteSuite } from '../hooks/useSuites';
+import { useSuites, useCreateSuite, useUpdateSuite, useDeleteSuite, useRunSuite } from '../hooks/useSuites';
 import { useScripts } from '../hooks/useScripts';
 import { useProjectStore } from '../stores/projectStore';
-import type { Schedule, Suite, TestCase, EnvConfig } from '../types';
+import type { Schedule, Suite, SuiteStage, TestCase, EnvConfig } from '../types';
 import { api } from '../lib/api';
 import type { RunListItem } from '../hooks/useRuns';
 
@@ -126,6 +126,10 @@ const QUICK_SUITES = [
 ] as const;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+function parseStages(raw: string): SuiteStage[] {
+  try { return JSON.parse(raw) as SuiteStage[]; } catch { return []; }
+}
 
 function parseTcIds(raw: string): string[] {
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -656,7 +660,10 @@ function SuiteSelector({ suites, testCases, selectedIds, onChange }: {
     if (!suiteId) return;
     const suite = suites.find(s => s.id === suiteId);
     if (!suite) return;
-    const ids = parseTcIds(suite.testCaseIds);
+    // Derive TC IDs from stages (by useCaseTag)
+    const stages = parseStages(suite.stages ?? '[]');
+    const ucTags = new Set(stages.map(s => s.useCaseTag));
+    const ids = testCases.filter(tc => tc.useCaseTag && ucTags.has(tc.useCaseTag)).map(tc => tc.id);
     onChange([...new Set([...selectedIds, ...ids])]);
   }
 
@@ -681,8 +688,8 @@ function SuiteSelector({ suites, testCases, selectedIds, onChange }: {
         >
           <option value="">Select a saved suite to load its tests…</option>
           {suites.map(s => {
-            const count = parseTcIds(s.testCaseIds).length;
-            return <option key={s.id} value={s.id}>{s.name} ({count} test{count !== 1 ? 's' : ''})</option>;
+            const count = parseStages(s.stages ?? '[]').length;
+            return <option key={s.id} value={s.id}>{s.name} ({count} stage{count !== 1 ? 's' : ''})</option>;
           })}
         </select>
       )}
@@ -745,20 +752,85 @@ function SuiteSelector({ suites, testCases, selectedIds, onChange }: {
 
 // ── Suite form (create / edit) ─────────────────────────────────────────────
 
-function SuiteForm({ mode, initial, testCases, scriptedTcIds, onSave, onCancel: _onCancel, isSaving }: {
+function SuiteForm({ mode, initial, testCases, onSave, onCancel: _onCancel, isSaving }: {
   mode: 'create' | 'edit';
-  initial?: { name: string; testCaseIds: string[] };
+  initial?: { name: string; stages: SuiteStage[] };
   testCases: TestCase[];
   scriptedTcIds: Set<string>;
-  onSave: (data: { name: string; testCaseIds: string[] }) => void;
+  onSave: (data: { name: string; stages: SuiteStage[] }) => void;
   onCancel: () => void;
   isSaving: boolean;
 }) {
   const [name, setName] = useState(initial?.name ?? '');
-  const existingIds = useMemo(() => new Set(testCases.map(tc => tc.id)), [testCases]);
-  const [selectedIds, setSelectedIds] = useState<string[]>(
-    (initial?.testCaseIds ?? []).filter(id => existingIds.has(id)),
-  );
+  const [stages, setStages] = useState<SuiteStage[]>(initial?.stages ?? []);
+  const dragFromRef = useRef<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
+  // Derive unique use cases with TC counts
+  const useCaseInfo = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const tc of testCases) {
+      if (tc.useCaseTag) map.set(tc.useCaseTag, (map.get(tc.useCaseTag) ?? 0) + 1);
+    }
+    return Array.from(map.entries()).map(([tag, count]) => ({ tag, count }));
+  }, [testCases]);
+
+  const stageTagSet = useMemo(() => new Set(stages.map(s => s.useCaseTag)), [stages]);
+
+  function addStage(tag: string) {
+    if (stageTagSet.has(tag)) return;
+    setStages(prev => [...prev, { useCaseTag: tag, mode: 'sequential' }]);
+  }
+
+  function removeStage(idx: number) {
+    setStages(prev => prev.filter((_, i) => i !== idx));
+  }
+
+  function toggleMode(idx: number) {
+    setStages(prev => prev.map((s, i) =>
+      i === idx ? { ...s, mode: s.mode === 'sequential' ? 'parallel' : 'sequential' } : s,
+    ));
+  }
+
+  function moveUp(idx: number) {
+    if (idx === 0) return;
+    setStages(prev => {
+      const n = [...prev];
+      [n[idx - 1], n[idx]] = [n[idx], n[idx - 1]];
+      return n;
+    });
+  }
+
+  function moveDown(idx: number) {
+    if (idx === stages.length - 1) return;
+    setStages(prev => {
+      const n = [...prev];
+      [n[idx], n[idx + 1]] = [n[idx + 1], n[idx]];
+      return n;
+    });
+  }
+
+  function handleDragStart(idx: number) { dragFromRef.current = idx; }
+  function handleDragOver(e: React.DragEvent, idx: number) { e.preventDefault(); setDragOverIdx(idx); }
+  function handleDrop(toIdx: number) {
+    const fromIdx = dragFromRef.current;
+    setDragOverIdx(null);
+    dragFromRef.current = null;
+    if (fromIdx === null || fromIdx === toIdx) return;
+    setStages(prev => {
+      const n = [...prev];
+      const [moved] = n.splice(fromIdx, 1);
+      n.splice(toIdx, 0, moved);
+      return n;
+    });
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) { toast.error('Suite name is required'); return; }
+    if (stages.length === 0) { toast.error('Add at least one use case to the suite'); return; }
+    onSave({ name: name.trim(), stages });
+  }
 
   const inputStyle: React.CSSProperties = {
     width: '100%', padding: '7px 10px', boxSizing: 'border-box',
@@ -770,13 +842,6 @@ function SuiteForm({ mode, initial, testCases, scriptedTcIds, onSave, onCancel: 
     color: 'var(--text-dim)', marginBottom: 5, display: 'block',
   };
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!name.trim()) { toast.error('Suite name is required'); return; }
-    if (selectedIds.length === 0) { toast.error('Select at least one test case'); return; }
-    onSave({ name: name.trim(), testCaseIds: selectedIds });
-  }
-
   return (
     <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div>
@@ -784,7 +849,116 @@ function SuiteForm({ mode, initial, testCases, scriptedTcIds, onSave, onCancel: 
         <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Smoke Suite" style={inputStyle} />
       </div>
 
-      <TcLibrarySelector testCases={testCases} selected={selectedIds} onChange={setSelectedIds} maxHeight={420} scriptedTcIds={scriptedTcIds} />
+      {/* Available use cases */}
+      <div>
+        <label style={labelStyle}>Available Use Cases</label>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {useCaseInfo.length === 0 && (
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>No use cases found.</span>
+          )}
+          {useCaseInfo.map(({ tag, count }) => {
+            const added = stageTagSet.has(tag);
+            return (
+              <button
+                key={tag}
+                type="button"
+                onClick={() => !added && addStage(tag)}
+                style={{
+                  padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600,
+                  cursor: added ? 'default' : 'pointer',
+                  background: added ? 'rgba(42,157,143,0.15)' : 'var(--surface3)',
+                  border: `1px solid ${added ? 'rgba(42,157,143,0.4)' : 'var(--border)'}`,
+                  color: added ? 'var(--pass)' : 'var(--text-dim)',
+                  opacity: added ? 0.7 : 1,
+                }}
+              >
+                {added ? '✓ ' : '+ '}{tag}
+                <span style={{ marginLeft: 5, opacity: 0.6, fontSize: 10 }}>{count}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Stage builder */}
+      <div>
+        <label style={labelStyle}>
+          Execution Stages
+          <span style={{ marginLeft: 6, fontWeight: 400, color: 'var(--text-dim)', textTransform: 'none', letterSpacing: 0, fontSize: 10 }}>
+            — drag to reorder · stages run in sequence, TCs within a stage run seq or parallel
+          </span>
+        </label>
+        {stages.length === 0 ? (
+          <div style={{
+            border: '2px dashed var(--border)', borderRadius: 8, padding: '20px',
+            textAlign: 'center', color: 'var(--text-dim)', fontSize: 12,
+          }}>
+            Click a use case above to add it as a stage
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            {stages.map((stage, idx) => {
+              const tcCount = useCaseInfo.find(u => u.tag === stage.useCaseTag)?.count ?? 0;
+              return (
+                <div
+                  key={stage.useCaseTag}
+                  draggable
+                  onDragStart={() => handleDragStart(idx)}
+                  onDragOver={(e) => handleDragOver(e, idx)}
+                  onDrop={() => handleDrop(idx)}
+                  onDragEnd={() => { setDragOverIdx(null); dragFromRef.current = null; }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    background: 'var(--surface3)', borderRadius: 7,
+                    border: `1px solid ${dragOverIdx === idx ? 'var(--cyan)' : 'var(--border)'}`,
+                    padding: '7px 10px',
+                    borderLeft: `3px solid ${stage.mode === 'parallel' ? 'var(--violet)' : 'var(--emerald)'}`,
+                  }}
+                >
+                  {/* Drag handle */}
+                  <span style={{ color: 'var(--text-dim)', opacity: 0.5, cursor: 'grab', fontSize: 14, userSelect: 'none' }}>⠿</span>
+
+                  {/* Stage index */}
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', minWidth: 18, flexShrink: 0 }}>
+                    {idx + 1}.
+                  </span>
+
+                  {/* Name + count */}
+                  <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {stage.useCaseTag}
+                  </span>
+                  <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0 }}>{tcCount} TC{tcCount !== 1 ? 's' : ''}</span>
+
+                  {/* Seq/Par toggle */}
+                  <button
+                    type="button"
+                    onClick={() => toggleMode(idx)}
+                    style={{
+                      padding: '3px 9px', borderRadius: 20, fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                      background: stage.mode === 'parallel' ? 'rgba(139,92,246,0.12)' : 'rgba(42,157,143,0.1)',
+                      border: `1px solid ${stage.mode === 'parallel' ? 'rgba(139,92,246,0.3)' : 'rgba(42,157,143,0.25)'}`,
+                      color: stage.mode === 'parallel' ? 'var(--violet)' : 'var(--pass)',
+                      flexShrink: 0, whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {stage.mode === 'parallel' ? '⚡ Parallel' : '→ Sequential'}
+                  </button>
+
+                  {/* Up/Down */}
+                  <button type="button" onClick={() => moveUp(idx)} disabled={idx === 0}
+                    style={{ background: 'none', border: 'none', color: idx === 0 ? 'var(--border)' : 'var(--text-dim)', cursor: idx === 0 ? 'default' : 'pointer', padding: '2px 4px', fontSize: 12 }}>▲</button>
+                  <button type="button" onClick={() => moveDown(idx)} disabled={idx === stages.length - 1}
+                    style={{ background: 'none', border: 'none', color: idx === stages.length - 1 ? 'var(--border)' : 'var(--text-dim)', cursor: idx === stages.length - 1 ? 'default' : 'pointer', padding: '2px 4px', fontSize: 12 }}>▼</button>
+
+                  {/* Remove */}
+                  <button type="button" onClick={() => removeStage(idx)}
+                    style={{ background: 'none', border: 'none', color: 'var(--fail)', cursor: 'pointer', padding: '2px 4px', fontSize: 13, opacity: 0.7 }}>✕</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       <button type="submit" disabled={isSaving} style={{
         width: '100%', padding: '8px 0', borderRadius: 7,
@@ -800,7 +974,7 @@ function SuiteForm({ mode, initial, testCases, scriptedTcIds, onSave, onCancel: 
 
 // ── Suite card (left column) ───────────────────────────────────────────────
 
-function SuiteCard({ suite, isSelected, onEdit, onDelete, onRunNow, runNowPending, canWrite = true, existingTcIds = new Set() }: {
+function SuiteCard({ suite, isSelected, onEdit, onDelete, onRunNow, runNowPending, canWrite = true }: {
   suite: Suite;
   isSelected: boolean;
   onEdit: () => void;
@@ -810,8 +984,8 @@ function SuiteCard({ suite, isSelected, onEdit, onDelete, onRunNow, runNowPendin
   canWrite?: boolean;
   existingTcIds?: Set<string>;
 }) {
-  const tcIds = useMemo(() => parseTcIds(suite.testCaseIds), [suite.testCaseIds]);
-  const validCount = useMemo(() => tcIds.filter(id => existingTcIds.has(id)).length, [tcIds, existingTcIds]);
+  const stages = useMemo(() => parseStages(suite.stages ?? '[]'), [suite.stages]);
+  const stageCount = stages.length;
 
   return (
     <div onClick={canWrite ? onEdit : undefined} style={{
@@ -828,7 +1002,7 @@ function SuiteCard({ suite, isSelected, onEdit, onDelete, onRunNow, runNowPendin
       <div style={{ flex: 1, overflow: 'hidden', minWidth: 0 }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{suite.name}</span>
       </div>
-      <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>{existingTcIds.size > 0 ? validCount : tcIds.length} test{(existingTcIds.size > 0 ? validCount : tcIds.length) !== 1 ? 's' : ''}</span>
+      <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>{stageCount} stage{stageCount !== 1 ? 's' : ''}</span>
       {canWrite && (
         <div style={{ display: 'flex', gap: 5, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
           <button disabled={runNowPending} onClick={onRunNow} style={{
@@ -1184,7 +1358,7 @@ export default function Scheduler() {
   const { mutateAsync: createSuite, isPending: creatingSuite } = useCreateSuite(projectId);
   const { mutateAsync: updateSuite, isPending: updatingSuite } = useUpdateSuite(projectId);
   const { mutateAsync: deleteSuite } = useDeleteSuite(projectId);
-  const { mutateAsync: createRun } = useCreateRun(projectId);
+  const { mutateAsync: runSuite } = useRunSuite(projectId);
 
   const activeCount = schedules.filter(s => s.isActive).length;
   const runs7d = scheduledRuns.filter(r => {
@@ -1206,7 +1380,7 @@ export default function Scheduler() {
 
   const editSuiteInitial = useMemo(() => {
     if (!editingSuite) return undefined;
-    return { name: editingSuite.name, testCaseIds: parseTcIds(editingSuite.testCaseIds) };
+    return { name: editingSuite.name, stages: parseStages(editingSuite.stages ?? '[]') };
   }, [editingSuite]);
 
   function closeForm() { setMode('idle'); setEditingId(null); setEditingSuiteId(null); }
@@ -1226,7 +1400,7 @@ export default function Scheduler() {
     } catch (e) { toast.error((e as Error).message ?? 'Failed to save'); }
   }
 
-  async function handleSaveSuite(data: { name: string; testCaseIds: string[] }) {
+  async function handleSaveSuite(data: { name: string; stages: SuiteStage[] }) {
     try {
       if (mode === 'suite-create') {
         await createSuite(data);
@@ -1249,12 +1423,12 @@ export default function Scheduler() {
   }
 
   async function handleSuiteRunNow(suite: Suite) {
-    const tcIds = parseTcIds(suite.testCaseIds);
-    if (tcIds.length === 0) { toast.error('This suite has no test cases'); return; }
+    const stages = parseStages(suite.stages ?? '[]');
+    if (stages.length === 0) { toast.error('This suite has no stages — add use cases to it first'); return; }
     setSuiteRunNowId(suite.id);
     try {
-      await createRun({ testCaseIds: tcIds, environment: defaultEnv, name: `${suite.name} — Quick Run` });
-      toast.success('Run queued — check Execution for live logs');
+      await runSuite({ suiteId: suite.id, environment: defaultEnv, name: `${suite.name} — Quick Run` });
+      toast.success('Suite run queued — check Execution for live logs');
     } catch (e) { toast.error((e as Error).message ?? 'Failed to trigger'); }
     finally { setSuiteRunNowId(null); }
   }
@@ -1548,7 +1722,7 @@ export default function Scheduler() {
                       initial={editSuiteInitial}
                       testCases={testCases}
                       scriptedTcIds={scriptedTcIds}
-                      onSave={handleSaveSuite}
+                      onSave={(data) => handleSaveSuite(data)}
                       onCancel={closeForm}
                       isSaving={creatingSuite || updatingSuite}
                     />

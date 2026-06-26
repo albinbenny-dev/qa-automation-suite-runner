@@ -320,6 +320,29 @@ function tcCol(n: number): string {
   return s;
 }
 
+// ── PATCH /reorder ────────────────────────────────────────────────────────
+
+router.patch('/reorder', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { orderedIds } = req.body as { orderedIds: string[] };
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+      res.status(400).json({ error: 'orderedIds must be a non-empty array' });
+      return;
+    }
+    await prisma.$transaction(
+      orderedIds.map((id, idx) =>
+        prisma.testCase.updateMany({
+          where: { id, projectId: req.project.id },
+          data: { sortOrder: idx },
+        })
+      )
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── POST /bulk-approve ─────────────────────────────────────────────────────
 
 router.post('/bulk-approve', async (req: Request, res: Response, next: NextFunction) => {

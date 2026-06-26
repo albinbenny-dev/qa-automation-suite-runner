@@ -7,7 +7,7 @@ import TCListPanel from '../components/execution/TCListPanel';
 import { getCurrentUser } from '../lib/auth';
 import { useProject } from '../hooks/useProjects';
 import { useProjectEnvConfigs } from '../hooks/useProjects';
-import { useTestCases, useUseCases, useDuplicateTestCase } from '../hooks/useTestCases';
+import { useTestCases, useUseCases, useDuplicateTestCase, useReorderTestCases } from '../hooks/useTestCases';
 import { useScripts } from '../hooks/useScripts';
 import { useRuns, useCreateRun, useCreateGroupRun, useCreateIndividualRun, useCancelRun, type RunListItem } from '../hooks/useRuns';
 import { useRunSocket } from '../hooks/useRunSocket';
@@ -238,6 +238,7 @@ export default function Execution() {
   const createIndividualRun = useCreateIndividualRun(projectId ?? '');
   const cancelRun = useCancelRun(projectId ?? '');
   const duplicateTc = useDuplicateTestCase(projectId ?? '');
+  const reorderTcs = useReorderTestCases(projectId ?? '');
 
   const { logs, stats, status: socketStatus, clearLogs, joinRun, leaveRun } = useRunSocket();
 
@@ -531,6 +532,14 @@ export default function Execution() {
     }
   }
 
+  async function handleReorderTcs(_useCaseTag: string, orderedIds: string[]) {
+    try {
+      await reorderTcs.mutateAsync(orderedIds);
+    } catch {
+      toast.error('Failed to save order');
+    }
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
@@ -625,6 +634,7 @@ export default function Execution() {
             onRunIndividual={handleRunIndividual}
             onViewTc={handleViewTc}
             onDuplicateTc={handleDuplicateTc}
+            onReorderTcs={handleReorderTcs}
             isRunning={isRunning}
           />
         </div>

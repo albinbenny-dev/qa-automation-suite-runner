@@ -303,6 +303,22 @@ export function useDuplicateTestCase(projectId: string) {
   });
 }
 
+export function useReorderTestCases(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (orderedIds: string[]) => {
+      const res = await api.patch<{ ok: boolean }>(
+        `/projects/${projectId}/test-cases/reorder`,
+        { orderedIds },
+      );
+      return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['test-cases', projectId] });
+    },
+  });
+}
+
 export function useUploadFile() {
   return useMutation({
     mutationFn: async (file: File) => {
