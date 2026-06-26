@@ -33,6 +33,7 @@ model Project {
   baseUrl         String?
   color           String           @default("#22d3ee")
   reqLibraryPath  String?
+  videoEnabled    Boolean          @default(true)
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
   createdBy       String

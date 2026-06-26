@@ -32,6 +32,7 @@ export interface RunJobPayload {
   parallelWorkers: number;
   headless: boolean;
   browser: 'chrome' | 'firefox';
+  record?: boolean;
   triggerType: 'MANUAL' | 'SCHEDULED' | 'INDIVIDUAL' | 'GROUP' | 'HEAL_RERUN';
 }
 

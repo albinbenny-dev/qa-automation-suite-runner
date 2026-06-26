@@ -74,6 +74,7 @@ function DetailsTab() {
   const updateProject = useUpdateProject(activeProject?.id ?? '');
   const updateCtx     = useUpdateContext(activeProject?.id ?? '');
   const { data: context } = useProjectContext(activeProject?.id ?? '');
+  const { isAdmin } = useRBAC(activeProject?.id ?? '');
 
   const [name, setName]       = useState(activeProject?.name ?? '');
   const [desc, setDesc]       = useState(activeProject?.description ?? '');
@@ -81,12 +82,14 @@ function DetailsTab() {
   const [colorIdx, setColorIdx] = useState(0);
   const [customInstructions, setCustomInstructions] = useState('');
   const [instructionsSaved, setInstructionsSaved] = useState(false);
+  const [videoEnabled, setVideoEnabled] = useState<boolean>(() => activeProject?.videoEnabled ?? true);
 
   useEffect(() => {
     if (activeProject) {
       setName(activeProject.name);
       setDesc(activeProject.description ?? '');
       setBaseUrl(activeProject.baseUrl ?? '');
+      setVideoEnabled(activeProject.videoEnabled ?? true);
     }
   }, [activeProject]);
 
@@ -100,7 +103,7 @@ function DetailsTab() {
   async function handleSave() {
     if (!activeProject) return;
     try {
-      await updateProject.mutateAsync({ name, description: desc, baseUrl });
+      await updateProject.mutateAsync({ name, description: desc, baseUrl, videoEnabled });
       toast.success('Project details saved.');
     } catch {
       toast.error('Failed to save project details.');
@@ -210,6 +213,39 @@ function DetailsTab() {
           </span>
         </div>
       </div>
+
+      {isAdmin && (
+        <div style={{
+          padding: '16px', borderRadius: '10px',
+          background: 'var(--surface2)',
+          border: `1px solid ${videoEnabled ? 'rgba(245,158,11,0.3)' : 'var(--border)'}`,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ ...LABEL_STYLE, marginBottom: 2 }}>🎬 Video Recording</div>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
+                {videoEnabled ? 'Enabled — all runs record by default' : 'Disabled — no videos will be captured'}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setVideoEnabled(v => !v)}
+              style={{
+                width: 44, height: 24, borderRadius: 12, border: 'none', cursor: 'pointer',
+                background: videoEnabled ? '#f59e0b' : 'var(--surface3)',
+                position: 'relative', transition: 'background 0.2s', flexShrink: 0,
+              }}
+            >
+              <span style={{
+                position: 'absolute', top: 3, left: videoEnabled ? 23 : 3,
+                width: 18, height: 18, borderRadius: '50%',
+                background: '#fff', transition: 'left 0.2s',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+              }} />
+            </button>
+          </div>
+        </div>
+      )}
 
       <div>
         <button

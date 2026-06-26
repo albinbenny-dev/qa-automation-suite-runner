@@ -151,6 +151,12 @@ async function startVncStack() {
   }, 20_000);
 }
 
+// ── Per-display recording lock ─────────────────────────────────────────────
+// Tracks whether ffmpeg is currently recording the Xvfb display.
+// Only one recording can run at a time per display. Concurrent runs that
+// request recording get a warning but still execute without video.
+let recordingActive = false;
+
 // Robot Framework binary
 const ROBOT_BIN = fs.existsSync('/usr/local/bin/robot')
   ? '/usr/local/bin/robot'
@@ -266,6 +272,7 @@ const server = http.createServer(async (req, res) => {
       password = '',
       environment = '',
       projectSlug: bodyProjectSlug = '',
+      record = false,
     } = body;
 
     if (!scriptPath || !reportFile) {
@@ -400,9 +407,59 @@ const server = http.createServer(async (req, res) => {
       robotEnv.PYTHONPATH = [pageObjectsDir, process.env.PYTHONPATH || ''].filter(Boolean).join(':');
     }
 
-    // SeleniumLibrary manages the browser — just run robot under xvfb-run
-    const spawnCmd = 'xvfb-run';
-    const spawnArgs = ['--auto-servernum', '--server-args=-screen 0 1920x1080x24', ROBOT_BIN, ...robotArgs];
+    // Use the pre-existing Xvfb display — do NOT wrap with xvfb-run as it
+    // creates a new display that breaks Chrome's CDP Runtime.evaluate
+    const spawnCmd = ROBOT_BIN;
+    const spawnArgs = [...robotArgs];
+
+    // ── Video recording ────────────────────────────────────────────────────
+    let ffmpegProc = null;
+    let videoPath = null;
+    let thisRunRecords = false;
+
+    if (record) {
+      if (recordingActive) {
+        sendLine({ type: 'warning', text: '[runner] ⚠ Video recording unavailable — another test is already recording on this display. Execution will continue without video.' });
+      } else {
+        recordingActive = true;
+        thisRunRecords = true;
+        videoPath = path.join(effectiveOutputDir, 'video.mp4');
+        ffmpegProc = spawn('ffmpeg', [
+          '-y',
+          '-video_size', '1280x900',
+          '-framerate', '10',
+          '-f', 'x11grab',
+          '-i', VNC_DISPLAY,
+          '-codec:v', 'libx264',
+          '-preset', 'fast',
+          '-crf', '32',
+          '-tune', 'stillimage',
+          '-pix_fmt', 'yuv420p',
+          videoPath,
+        ], { stdio: ['pipe', 'pipe', 'pipe'] });
+        let ffmpegStarted = false;
+        ffmpegProc.stderr.on('data', (d) => {
+          const msg = d.toString();
+          if (!ffmpegStarted && msg.includes('frame=')) { ffmpegStarted = true; }
+          if (/error|invalid|failed/i.test(msg) && !msg.includes('Last message')) {
+            sendLine({ type: 'log', text: `[ffmpeg] ${msg.trim().slice(0, 200)}` });
+          }
+        });
+        ffmpegProc.on('error', (err) => {
+          console.error(`[qa-runner] ffmpeg error: ${err.message}`);
+          sendLine({ type: 'log', text: `[runner] ⚠ ffmpeg failed to start: ${err.message}` });
+          recordingActive = false;
+          thisRunRecords = false;
+          videoPath = null;
+        });
+        ffmpegProc.on('exit', (code) => {
+          if (code !== 0 && code !== null && thisRunRecords) {
+            sendLine({ type: 'log', text: `[runner] ⚠ ffmpeg exited with code ${code} — video may be missing` });
+          }
+        });
+        sendLine({ type: 'log', text: '[runner] 🎬 Video recording started (1280x900 10fps)' });
+      }
+    }
 
     sendLine({ type: 'log', text: `[runner] Starting Robot Framework (${seleniumBrowser}) headless=${headless}` });
 
@@ -443,28 +500,53 @@ const server = http.createServer(async (req, res) => {
     proc.stdout.on('data', (chunk) => { handleChunk(chunk); captureChunk(chunk); });
     proc.stderr.on('data', (chunk) => { handleChunk(chunk); captureChunk(chunk); });
 
-    proc.on('close', (exitCode) => {
+    proc.on('close', async (exitCode) => {
       procDone = true;
       clearTimeout(killTimer);
       clearInterval(heartbeatTimer);
+
+      // ── Stop ffmpeg, then remux to faststart in background ──────────────────
+      // We stop recording without blocking the run, then run a quick copy-remux
+      // to move the moov atom to the front so browsers can play inline.
+      if (ffmpegProc && thisRunRecords) {
+        const rawPath  = videoPath;
+        const fastPath = rawPath ? rawPath.replace('.mp4', '_fast.mp4') : null;
+        ffmpegProc.on('exit', () => {
+          recordingActive = false;
+          if (!rawPath || !fastPath) return;
+          // Remux raw recording → faststart copy (moov atom at front for browser playback)
+          const remux = spawn('ffmpeg', [
+            '-y', '-i', rawPath,
+            '-movflags', '+faststart',
+            '-c', 'copy',
+            fastPath,
+          ], { stdio: ['ignore', 'ignore', 'ignore'] });
+          remux.on('exit', (code) => {
+            if (code === 0 && fs.existsSync(fastPath) && fs.statSync(fastPath).size > 0) {
+              try { fs.renameSync(fastPath, rawPath); } catch {}
+            } else {
+              try { fs.unlinkSync(fastPath); } catch {}
+            }
+          });
+        });
+        ffmpegProc.on('error', () => { recordingActive = false; });
+        try { ffmpegProc.kill('SIGTERM'); } catch { try { ffmpegProc.kill('SIGKILL'); } catch {} }
+        setTimeout(() => { try { ffmpegProc.kill('SIGKILL'); } catch {} }, 8_000);
+        sendLine({ type: 'log', text: '[runner] 🎬 Video recording stopped — processing for playback…' });
+      }
+
       const reportData = parseRobotXmlReport(xmlOutputPath);
       const errorLines = outputLines.filter(l => /FAIL|Error|Exception|Critical/i.test(l)).slice(-5).join(' | ');
 
       let screenshotPath = null;
-      const videoPaths = [];
       try {
         const scanDir = (dir) => {
           if (!fs.existsSync(dir)) return;
           for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
             const full = path.join(dir, entry.name);
-            if (entry.isDirectory()) {
-              scanDir(full);
-            } else {
-              if (!screenshotPath && /\.(png|jpg|jpeg)$/i.test(entry.name)) {
-                screenshotPath = full;
-              } else if (/\.(webm|mp4)$/i.test(entry.name)) {
-                videoPaths.push(full);
-              }
+            if (entry.isDirectory()) { scanDir(full); }
+            else if (!screenshotPath && /\.(png|jpg|jpeg)$/i.test(entry.name)) {
+              screenshotPath = full;
             }
           }
         };
@@ -473,13 +555,14 @@ const server = http.createServer(async (req, res) => {
         console.error(`[qa-runner] artifact scan error: ${scanErr.message}`);
       }
 
-      sendLine({ type: 'done', exitCode: exitCode ?? 1, reportData, screenshotPath, videoPaths, errorSnippet: errorLines || null });
+      sendLine({ type: 'done', exitCode: exitCode ?? 1, reportData, screenshotPath, videoPath, errorSnippet: errorLines || null });
       res.end();
     });
 
     proc.on('error', (err) => {
       clearTimeout(killTimer);
       clearInterval(heartbeatTimer);
+      if (thisRunRecords) { try { ffmpegProc?.kill('SIGKILL'); } catch {} recordingActive = false; }
       sendLine({ type: 'done', exitCode: 1, reportData: null, error: err.message });
       res.end();
     });

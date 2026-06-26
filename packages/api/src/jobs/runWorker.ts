@@ -18,7 +18,7 @@ interface RFReport {
 async function processRunJob(job: Job<RunJobPayload>): Promise<void> {
   const { runId, runSeq, projectId, testCaseIds, scriptPaths, skippedTcIds = [],
     environment, envBaseUrl,
-    envUsername = '', envPassword = '', parallelWorkers, headless, browser } = job.data;
+    envUsername = '', envPassword = '', parallelWorkers, headless, browser, record = false } = job.data;
 
   const total = scriptPaths.length;
   const runLabel = `RUN-${String(runSeq).padStart(4, '0')}`;
@@ -152,8 +152,9 @@ async function processRunJob(job: Job<RunJobPayload>): Promise<void> {
       scriptPath,
       reportFile,
       outputDir,
-      { parallelWorkers, headless, browser, envBaseUrl, envUsername, envPassword, environment, projectSlug },
+      { parallelWorkers, headless, browser, envBaseUrl, envUsername, envPassword, environment, projectSlug, record },
       (line) => emitLog(runId, 'run', line),
+      (warning) => emitLog(runId, 'warn', warning),
       runAbortController.signal,
     );
 
@@ -273,8 +274,9 @@ async function spawnRunner(
   scriptPath: string,
   reportFile: string,
   outputDir: string,
-  opts: { parallelWorkers: number; headless: boolean; browser: string; envBaseUrl: string; envUsername: string; envPassword: string; environment: string; projectSlug?: string },
+  opts: { parallelWorkers: number; headless: boolean; browser: string; envBaseUrl: string; envUsername: string; envPassword: string; environment: string; projectSlug?: string; record?: boolean },
   onLine: (line: string) => void,
+  onWarning: (line: string) => void,
   externalSignal?: AbortSignal,
 ): Promise<SpawnResult> {
   const start = Date.now();
@@ -305,6 +307,7 @@ async function spawnRunner(
         password: opts.envPassword || '',
         environment: opts.environment,
         projectSlug: opts.projectSlug || '',
+        record: opts.record ?? false,
       }),
     });
 
@@ -327,6 +330,8 @@ async function spawnRunner(
       }
       if (msg.type === 'heartbeat') {
         return;
+      } else if (msg.type === 'warning' && msg.text) {
+        onWarning(msg.text);
       } else if (msg.type === 'log' && msg.text) {
         onLine(msg.text);
       } else if (msg.type === 'done') {

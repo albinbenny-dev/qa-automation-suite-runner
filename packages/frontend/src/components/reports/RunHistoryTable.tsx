@@ -411,31 +411,17 @@ function ExpandedRunDetail({
                       </button>
                     )}
                     {r.videoPath && (
-                      <button
-                        onClick={() => {
+                      <VideoButton
+                        resultId={r.id}
+                        runId={runId}
+                        projectId={projectId}
+                        tcId={r.testCase.tcId}
+                        isMultiple={r.videoPath.startsWith('[')}
+                        onDownload={() => {
                           const isMultiple = r.videoPath!.startsWith('[');
-                          const filename = isMultiple
-                            ? `videos-${r.testCase.tcId}.zip`
-                            : `video-${r.testCase.tcId}.webm`;
-                          downloadAsset(r.id, 'video', filename);
+                          downloadAsset(r.id, 'video', isMultiple ? `videos-${r.testCase.tcId}.zip` : `video-${r.testCase.tcId}.mp4`);
                         }}
-                        title="Download video recording"
-                        style={{
-                          padding: '2px 7px',
-                          borderRadius: 5,
-                          background: 'rgba(42,157,143,0.12)',
-                          color: 'var(--pass)',
-                          border: '1px solid rgba(42,157,143,0.25)',
-                          cursor: 'pointer',
-                          fontSize: 10,
-                          fontWeight: 600,
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 3,
-                        }}
-                      >
-                        🎬 Video
-                      </button>
+                      />
                     )}
                     {r.tracePath && (
                       <button
@@ -511,27 +497,6 @@ function ExpandedRunDetail({
             }}
           >
             📥 Download Excel Report
-          </button>
-        )}
-        {onHeal && runStatus === 'FAILED' && (
-          <button
-            onClick={onHeal}
-            disabled={isHealing}
-            style={{
-              padding: '5px 14px',
-              borderRadius: 6,
-              background: isHealing ? 'rgba(244,123,32,0.06)' : 'rgba(244,123,32,0.12)',
-              color: isHealing ? 'rgba(244,123,32,0.5)' : '#F47B20',
-              border: '1px solid rgba(244,123,32,0.25)',
-              cursor: isHealing ? 'not-allowed' : 'pointer',
-              fontSize: 11,
-              fontWeight: 700,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-            }}
-          >
-            {isHealing ? '⏳ Sending…' : '🔧 Heal Failed'}
           </button>
         )}
         <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
@@ -681,23 +646,6 @@ export default function RunHistoryTable({ projectId, runs, onExport, initialExpa
                     {retryRun.isPending ? '⏳' : '↻'} Retry
                   </button>
                 )}
-                {canAccessHealing && failed > 0 && (run.status === 'FAILED') && (
-                  <button
-                    onClick={() => handleHeal(run.id)}
-                    disabled={triggerHeal.isPending}
-                    title="Send failed tests to Healing Agent"
-                    style={{
-                      padding: '3px 10px', borderRadius: 6,
-                      background: triggerHeal.isPending ? 'rgba(244,123,32,0.06)' : 'rgba(244,123,32,0.12)',
-                      color: triggerHeal.isPending ? 'rgba(244,123,32,0.45)' : '#F47B20',
-                      border: '1px solid rgba(244,123,32,0.25)',
-                      cursor: triggerHeal.isPending ? 'not-allowed' : 'pointer',
-                      fontSize: 11, fontWeight: 600,
-                    }}
-                  >
-                    🔧 Heal
-                  </button>
-                )}
                 {onExport && (
                   <button
                     onClick={() => onExport(run.id)}
@@ -715,8 +663,6 @@ export default function RunHistoryTable({ projectId, runs, onExport, initialExpa
                 projectId={projectId}
                 runId={run.id}
                 onExport={onExport}
-                onHeal={() => handleHeal(run.id)}
-                isHealing={triggerHeal.isPending}
                 runStatus={run.status}
               />
             )}
@@ -724,5 +670,32 @@ export default function RunHistoryTable({ projectId, runs, onExport, initialExpa
         );
       })}
     </div>
+  );
+}
+
+// ── VideoButton — direct download ─────────────────────────────────────────
+
+function VideoButton({ tcId, isMultiple, onDownload }: {
+  resultId: string;
+  runId: string;
+  projectId: string;
+  tcId: string;
+  isMultiple: boolean;
+  onDownload: () => void;
+}) {
+  return (
+    <button
+      onClick={onDownload}
+      title={isMultiple ? 'Download all session videos (zip)' : `Download recording for ${tcId}`}
+      style={{
+        padding: '2px 7px', borderRadius: 5,
+        background: 'rgba(245,158,11,0.12)', color: '#f59e0b',
+        border: '1px solid rgba(245,158,11,0.3)',
+        cursor: 'pointer', fontSize: 10, fontWeight: 600,
+        display: 'flex', alignItems: 'center', gap: 3,
+      }}
+    >
+      🎬 {isMultiple ? 'Videos' : 'Video'}
+    </button>
   );
 }

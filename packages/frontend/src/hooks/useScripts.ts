@@ -66,11 +66,12 @@ export function useDeleteScript(projectId: string) {
 export function useUploadScript(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ file, testCaseId }: { file: File; testCaseId?: string }) => {
+    mutationFn: async ({ file, testCaseId, autoCreateTCs }: { file: File; testCaseId?: string; autoCreateTCs?: boolean }) => {
       const formData = new FormData();
       formData.append('file', file);
       if (testCaseId) formData.append('testCaseId', testCaseId);
-      const res = await api.post<Script & { converted?: boolean }>(
+      if (autoCreateTCs) formData.append('autoCreateTCs', 'true');
+      const res = await api.post<Script & { converted?: boolean; tcCreated?: number }>(
         `/projects/${projectId}/scripts/upload`,
         formData,
         { headers: { 'Content-Type': 'multipart/form-data' } },
@@ -134,6 +135,93 @@ export interface ImportRobotResult {
   originalLibrary: 'SeleniumLibrary' | 'Browser';
   testCaseId: string | null;
   createdAt: string;
+}
+
+export interface FileTreeNode {
+  name: string;
+  path: string;
+  type: 'file' | 'dir';
+  children?: FileTreeNode[];
+  ext?: string;
+}
+
+export function useProjectFileTree(projectId: string | undefined) {
+  return useQuery({
+    queryKey: ['file-tree', projectId],
+    queryFn: async () => {
+      const res = await api.get<{ tree: FileTreeNode[]; root: string }>(
+        `/projects/${projectId}/scripts/file-tree`,
+      );
+      return res.data;
+    },
+    enabled: !!projectId,
+    staleTime: 10_000,
+  });
+}
+
+export function useDeleteProjectFile(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (relPath: string) => {
+      await api.delete(`/projects/${projectId}/scripts/project-file`, { params: { path: relPath } });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['file-tree', projectId] });
+      qc.invalidateQueries({ queryKey: ['scripts', projectId] });
+    },
+  });
+}
+
+export function useMoveProjectFile(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ from, to }: { from: string; to: string }) => {
+      await api.post(`/projects/${projectId}/scripts/project-file/move`, { from, to });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['file-tree', projectId] });
+      qc.invalidateQueries({ queryKey: ['scripts', projectId] });
+    },
+  });
+}
+
+export function useUploadProjectFile(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ file, folder }: { file: File; folder?: string }) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (folder) formData.append('folder', folder);
+      const res = await api.post<{ path: string; filename: string; size: number }>(
+        `/projects/${projectId}/scripts/project-file/upload`,
+        formData,
+      );
+      return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['file-tree', projectId] });
+    },
+  });
+}
+
+export function downloadProjectFile(projectId: string, relPath: string): void {
+  const url = `/api/projects/${projectId}/scripts/project-file/download?path=${encodeURIComponent(relPath)}`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = relPath.split('/').pop() ?? relPath;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+export function useCreateProjectFolder(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (folder: string) => {
+      await api.post(`/projects/${projectId}/scripts/project-file/mkdir`, { folder });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['file-tree', projectId] }),
+  });
 }
 
 export function useImportRobotScript(projectId: string) {

@@ -1,18 +1,21 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 
-# Start Xvfb virtual display
-Xvfb :99 -screen 0 1280x1024x24 &
+# ── Virtual display ──────────────────────────────────────────────────────────
+Xvfb :99 -screen 0 1280x900x24 -ac +extension GLX +render -noreset &
 export DISPLAY=:99
+sleep 1
 
-# Start window manager (needed for some browser interactions)
-fluxbox &
+# ── Window manager (keeps browsers from crashing without a WM) ───────────────
+openbox &
 
-# Start VNC server on :99
-x11vnc -display :99 -forever -nopw -quiet &
+# ── VNC server ───────────────────────────────────────────────────────────────
+x11vnc -display :99 -forever -nopw -quiet -rfbport 5900 &
 
-# Start noVNC websocket proxy on port 6080
-/opt/noVNC/utils/novnc_proxy --vnc localhost:5900 --listen 6080 &
+# ── noVNC websocket proxy on port 6080 ───────────────────────────────────────
+websockify --web /usr/share/novnc 6080 localhost:5900 &
 
-# Start the runner API server
-exec node src/index.js
+echo "VNC ready on :5900 — noVNC on :6080"
+
+# ── Runner HTTP server ────────────────────────────────────────────────────────
+exec node /app/packages/runner/src/index.js

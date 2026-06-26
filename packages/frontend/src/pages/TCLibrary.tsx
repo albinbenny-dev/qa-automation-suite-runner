@@ -260,7 +260,7 @@ export default function TCLibrary() {
   async function handleRunGroup(ids: string[]) {
     if (!projectId || ids.length === 0) return;
     try {
-      await createRun.mutateAsync({ testCaseIds: ids, environment: defaultEnv, name: `Quick Run — ${defaultEnv}` });
+      await createRun.mutateAsync({ testCaseIds: ids, environment: defaultEnv, name: `Quick Run — ${defaultEnv}`, record: true });
       toast.success('Run queued! Check Execution for live logs.');
       navigate(`/projects/${slug}/execution`);
     } catch {
@@ -270,7 +270,7 @@ export default function TCLibrary() {
   async function handleRunIndividual(tc: TestCase) {
     if (!projectId) return;
     try {
-      await createRun.mutateAsync({ testCaseIds: [tc.id], environment: defaultEnv, name: `Quick Run — ${defaultEnv}` });
+      await createRun.mutateAsync({ testCaseIds: [tc.id], environment: defaultEnv, name: `Quick Run — ${defaultEnv}`, record: true });
       toast.success('Run queued! Check Execution for live logs.');
       navigate(`/projects/${slug}/execution`);
     } catch {

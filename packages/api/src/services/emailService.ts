@@ -1,5 +1,11 @@
 import nodemailer from 'nodemailer';
-import type { ReportsAgentOutput } from '../agents/reportsAgent.js';
+
+interface ReportsAgentOutput {
+  summary: string;
+  severity: string;
+  rootCauses: string[];
+  recommendations: string[];
+}
 
 // ── Transporter factory ────────────────────────────────────────────────────
 

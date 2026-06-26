@@ -83,6 +83,97 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
+// ── GET /project-file/content — return arbitrary project file text ─────────
+
+router.get('/project-file/content', requireProjectAccess as RequestHandler, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { slug } = req.project;
+    const relPath = (req.query['path'] as string | undefined) ?? '';
+    if (!relPath) { res.status(400).json({ error: 'path is required' }); return; }
+    const abs = resolveProjectPath(slug, relPath);
+    if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) { res.status(404).json({ error: 'File not found' }); return; }
+    const content = fs.readFileSync(abs, 'utf8');
+    res.json({ content, path: relPath });
+  } catch (err) { next(err); }
+});
+
+// ── PUT /project-file/content — save arbitrary project file text ────────────
+
+router.put('/project-file/content', requireProjectAccess as RequestHandler, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { slug, id: projectId } = req.project;
+    const relPath = (req.query['path'] as string | undefined) ?? '';
+    if (!relPath) { res.status(400).json({ error: 'path is required' }); return; }
+    const { content } = req.body as { content?: string };
+    if (typeof content !== 'string') { res.status(400).json({ error: 'content is required' }); return; }
+    const abs = resolveProjectPath(slug, relPath);
+    if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) { res.status(404).json({ error: 'File not found' }); return; }
+    fs.writeFileSync(abs, content, 'utf8');
+    await prisma.script.updateMany({ where: { projectId, filename: relPath }, data: { content } }).catch(() => {});
+    res.json({ saved: relPath });
+  } catch (err) { next(err); }
+});
+
+// ── GET /project-file/search — full-text search across project files ─────────
+
+router.get('/project-file/search', requireProjectAccess as RequestHandler, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { slug } = req.project;
+    const q = ((req.query['q'] as string | undefined) ?? '').trim();
+    if (q.length < 2) { res.json({ results: [] }); return; }
+
+    const extFilter = req.query['ext'] as string | undefined;
+    const allowedExts = extFilter ? extFilter.split(',').map(e => e.trim().toLowerCase()) : null;
+
+    const binaryExts = new Set(['.png','.jpg','.jpeg','.gif','.bmp','.ico','.woff','.woff2','.ttf','.eot','.pdf','.zip','.tar','.gz','.exe','.dll','.so','.pyc']);
+    const searchRoot = process.env.SCRIPTS_ROOT ?? '/scripts';
+    const root = path.join(searchRoot, slug);
+
+    if (!fs.existsSync(root)) { res.json({ results: [] }); return; }
+
+    // Collect all files recursively
+    const allFiles: string[] = [];
+    const walk = (dir: string) => {
+      if (allFiles.length >= 50) return;
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (allFiles.length >= 50) break;
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk(fullPath); }
+        else if (entry.isFile()) {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (binaryExts.has(ext)) continue;
+          if (allowedExts && !allowedExts.includes(ext)) continue;
+          allFiles.push(fullPath);
+        }
+      }
+    };
+    walk(root);
+
+    const results: { path: string; matches: { line: number; text: string }[] }[] = [];
+    const qLower = q.toLowerCase();
+
+    for (const filePath of allFiles) {
+      let text: string;
+      try { text = fs.readFileSync(filePath, 'utf8'); } catch { continue; }
+      const lines = text.split('\n');
+      const matches: { line: number; text: string }[] = [];
+      for (let i = 0; i < lines.length && matches.length < 10; i++) {
+        if (lines[i].toLowerCase().includes(qLower)) {
+          matches.push({ line: i + 1, text: lines[i].slice(0, 200) });
+        }
+      }
+      if (matches.length > 0) {
+        const relPath = path.relative(root, filePath).replace(/\\/g, '/');
+        results.push({ path: relPath, matches });
+      }
+    }
+
+    res.json({ results });
+  } catch (err) { next(err); }
+});
+
 // ── GET /:id/content — return raw script content ───────────────────────────
 
 router.get('/:id/content', async (req: Request, res: Response) => {
@@ -146,6 +237,30 @@ router.put('/:id/content', async (req: Request, res: Response) => {
   }
 });
 
+// DELETE /project-file?path=<relative>  ← must be before /:id to avoid param shadowing
+router.delete('/project-file', requireProjectAccess as RequestHandler, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { slug, id: projectId } = req.project;
+    const relPath = (req.query['path'] as string | undefined) ?? '';
+    if (!relPath) { res.status(400).json({ error: 'path is required' }); return; }
+    const abs = resolveProjectPath(slug, relPath);
+    if (!fs.existsSync(abs)) { res.status(404).json({ error: 'File not found' }); return; }
+    const stat = fs.statSync(abs);
+    if (stat.isDirectory()) {
+      fs.rmSync(abs, { recursive: true, force: true });
+      // Delete all DB records whose filename is under this directory
+      const prefix = relPath.endsWith('/') ? relPath : relPath + '/';
+      await prisma.script.deleteMany({ where: { projectId, filename: { startsWith: prefix } } }).catch(() => {});
+      await prisma.projectResource.deleteMany({ where: { projectId, filename: { startsWith: prefix } } }).catch(() => {});
+    } else {
+      fs.unlinkSync(abs);
+      await prisma.script.deleteMany({ where: { projectId, filename: relPath } }).catch(() => {});
+      await prisma.projectResource.deleteMany({ where: { projectId, filename: relPath } }).catch(() => {});
+    }
+    res.json({ deleted: relPath });
+  } catch (err) { next(err); }
+});
+
 // ── DELETE /:id ────────────────────────────────────────────────────────────
 
 router.delete('/:id', async (req: Request, res: Response) => {
@@ -202,6 +317,7 @@ router.post(
       const projectId = req.project.id;
       const slug = req.project.slug;
       const testCaseId = (req.body?.testCaseId as string | undefined) || null;
+      const autoCreateTCs = req.body?.autoCreateTCs === 'true';
 
       const rawContent = req.file.buffer.toString('utf-8');
       let filename = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -218,6 +334,9 @@ router.post(
           await prisma.script.delete({ where: { id: existing.id } });
           deleteScript(slug, existing.filename);
         }
+      } else if (autoCreateTCs) {
+        // Standalone import — place under TestCases/Uncategorised/ to keep it visible in the project tree
+        filename = `TestCases/Uncategorised/${filename}`;
       }
 
       saveScript(slug, filename, rawContent);
@@ -233,6 +352,41 @@ router.post(
         },
       });
 
+      // Auto-create test cases from *** Test Cases *** section when in standalone mode
+      let tcCreated = 0;
+      if (autoCreateTCs && !testCaseId) {
+        const tcNames: string[] = [];
+        let inTcSection = false;
+        for (const line of rawContent.split('\n')) {
+          if (/^\*+\s*Test Cases\s*\**/i.test(line.trim())) { inTcSection = true; continue; }
+          if (/^\*+\s/.test(line.trim()) && inTcSection) { inTcSection = false; continue; }
+          if (inTcSection && line.trim() && !line.trim().startsWith('#') && !/^\s/.test(line)) {
+            tcNames.push(line.trim());
+          }
+        }
+        const existingIds = await prisma.testCase.findMany({ where: { projectId }, select: { tcId: true } });
+        const uploadPrefix = req.project.slug.replace(/[^a-z0-9]/gi, '').slice(0, 6).toUpperCase() || 'TC';
+        let uploadCounter = existingIds.reduce((max, { tcId }) => {
+          const m = tcId.match(/(\d+)$/);
+          return m ? Math.max(max, parseInt(m[1], 10)) : max;
+        }, 0);
+        for (const name of tcNames) {
+          const existing = await prisma.testCase.findFirst({ where: { projectId, title: name } });
+          if (!existing) {
+            uploadCounter++;
+            await prisma.testCase.create({
+              data: {
+                projectId,
+                tcId: `${uploadPrefix}-${String(uploadCounter).padStart(3, '0')}`,
+                title: name, type: 'UI', status: 'DRAFT', expectedResult: '',
+                scripts: { connect: { id: script.id } },
+              },
+            });
+            tcCreated++;
+          }
+        }
+      }
+
       res.status(201).json({
         id: script.id,
         filename: script.filename,
@@ -240,6 +394,7 @@ router.post(
         testCaseId: script.testCaseId,
         isCustomUpload: true,
         createdAt: script.createdAt,
+        tcCreated,
       });
     } catch (err) {
       console.error('[scripts] POST /upload', err);
@@ -266,7 +421,7 @@ router.get('/export/zip', async (req: Request, res: Response) => {
       filenames = scripts.map((s: { filename: string }) => s.filename);
     }
 
-    const buffer = await exportZip(req.project.slug, filenames);
+    const buffer = exportZip(req.project.slug, filenames);
     const name = `${req.project.slug}-scripts.zip`;
 
     res.setHeader('Content-Type', 'application/zip');
@@ -337,6 +492,136 @@ router.get('/mine-keywords', async (req: Request, res: Response) => {
   }
 });
 
+// ── GET /file-tree — return full project folder tree for the Project Files panel ──────────────
+
+const SCRIPTS_ROOT_FT = process.env.SCRIPTS_ROOT ?? '/scripts';
+
+const TREE_SKIP_DIRS = new Set([
+  '__pycache__', '.git', 'node_modules', '.venv', 'venv', '.idea', '.github',
+  'log', 'logs', 'rerun_results', 'rerun',
+]);
+const TREE_SKIP_EXTS = new Set(['.html', '.xml', '.pyc', '.pyo']);
+const TREE_SKIP_FILES = new Set(['log.html', 'output.xml', 'report.html', 'debug.xml', 'xunit.xml']);
+
+interface FileTreeNode {
+  name: string;
+  path: string; // relative to project root
+  type: 'file' | 'dir';
+  children?: FileTreeNode[];
+  ext?: string;
+}
+
+function buildFileTree(dir: string, baseDir: string): FileTreeNode[] {
+  if (!fs.existsSync(dir)) return [];
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const nodes: FileTreeNode[] = [];
+  for (const entry of entries) {
+    const rel = path.relative(baseDir, path.join(dir, entry.name)).replace(/\\/g, '/');
+    if (entry.isDirectory()) {
+      if (TREE_SKIP_DIRS.has(entry.name) || entry.name.startsWith('.') || /^downloads_/i.test(entry.name)) continue;
+      const children = buildFileTree(path.join(dir, entry.name), baseDir);
+      nodes.push({ name: entry.name, path: rel, type: 'dir', children });
+    } else {
+      const ext = path.extname(entry.name).toLowerCase();
+      if (TREE_SKIP_EXTS.has(ext) || TREE_SKIP_FILES.has(entry.name)) continue;
+      nodes.push({ name: entry.name, path: rel, type: 'file', ext });
+    }
+  }
+  // dirs first, then files, each sorted alphabetically
+  nodes.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  return nodes;
+}
+
+router.get('/file-tree', requireProjectAccess as RequestHandler, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { slug } = req.project;
+    const root = path.join(SCRIPTS_ROOT_FT, slug);
+    const tree = buildFileTree(root, root);
+    res.json({ tree, root: slug });
+  } catch (err) { next(err); }
+});
+
+// ── Project file management endpoints ────────────────────────────────────────
+
+// Helper: resolve + validate a relative path stays inside the project root
+function resolveProjectPath(slug: string, relPath: string): string {
+  const root = path.join(SCRIPTS_ROOT_FT, slug);
+  const abs = path.resolve(path.join(root, relPath));
+  if (!abs.startsWith(root + path.sep) && abs !== root) {
+    throw Object.assign(new Error('Invalid path'), { status: 400 });
+  }
+  return abs;
+}
+
+// GET /project-file/download?path=<relative>
+router.get('/project-file/download', requireProjectAccess as RequestHandler, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { slug, id: projectId } = req.project;
+    const relPath = (req.query['path'] as string | undefined) ?? '';
+    if (!relPath) { res.status(400).json({ error: 'path is required' }); return; }
+    const abs = resolveProjectPath(slug, relPath);
+    if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) { res.status(404).json({ error: 'File not found' }); return; }
+    res.download(abs, path.basename(abs));
+  } catch (err) { next(err); }
+});
+
+// POST /project-file/move  { from: string, to: string }
+router.post('/project-file/move', requireProjectAccess as RequestHandler, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { slug, id: projectId } = req.project;
+    const { from, to } = req.body as { from?: string; to?: string };
+    if (!from || !to) { res.status(400).json({ error: 'from and to are required' }); return; }
+    const absFrom = resolveProjectPath(slug, from);
+    const absTo   = resolveProjectPath(slug, to);
+    if (!fs.existsSync(absFrom)) { res.status(404).json({ error: 'Source not found' }); return; }
+    if (fs.existsSync(absTo)) { res.status(409).json({ error: 'Destination already exists' }); return; }
+    fs.mkdirSync(path.dirname(absTo), { recursive: true });
+    fs.renameSync(absFrom, absTo);
+    await prisma.script.updateMany({ where: { projectId, filename: from }, data: { filename: to } }).catch(() => {});
+    res.json({ from, to });
+  } catch (err) { next(err); }
+});
+
+// POST /project-file/mkdir  { folder: string }
+router.post('/project-file/mkdir', requireProjectAccess as RequestHandler, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { slug } = req.project;
+    const folder = ((req.body?.folder as string | undefined) ?? '').replace(/^\/+|\/+$/g, '');
+    if (!folder) { res.status(400).json({ error: 'folder is required' }); return; }
+    const abs = resolveProjectPath(slug, folder);
+    if (fs.existsSync(abs)) { res.status(409).json({ error: 'Folder already exists' }); return; }
+    fs.mkdirSync(abs, { recursive: true });
+    res.status(201).json({ folder });
+  } catch (err) { next(err); }
+});
+
+// POST /project-file/upload  (multipart: file + path)
+const projectFileUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+router.post('/project-file/upload', requireProjectAccess as RequestHandler, projectFileUpload.single('file'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!req.file) { res.status(400).json({ error: 'file is required' }); return; }
+    const { slug, id: projectId } = req.project;
+    const folder = ((req.body?.folder as string | undefined) ?? '').replace(/^\/+|\/+$/g, '');
+    const filename = req.file.originalname.replace(/[^a-zA-Z0-9._\-() ]/g, '_');
+    const relPath = folder ? `${folder}/${filename}` : filename;
+    const abs = resolveProjectPath(slug, relPath);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, req.file.buffer);
+    // Register in DB if it's a non-robot file
+    if (!filename.endsWith('.robot')) {
+      await prisma.projectResource.upsert({
+        where: { projectId_filename: { projectId, filename: relPath } },
+        create: { projectId, filename: relPath, originalName: filename, size: req.file.size },
+        update: { size: req.file.size },
+      }).catch(() => {});
+    }
+    res.status(201).json({ path: relPath, filename, size: req.file.size });
+  } catch (err) { next(err); }
+});
+
 // ── POST /import-folder — receive zip upload, extract, parse .robot files, auto-create test cases
 
 const folderUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
@@ -344,48 +629,89 @@ const folderUpload = multer({ storage: multer.memoryStorage(), limits: { fileSiz
 router.post('/import-folder', requireProjectAccess as RequestHandler, folderUpload.single('folder'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!req.file) { res.status(400).json({ error: 'A zip file is required (field: folder)' }); return; }
-    const { projectId } = req.params;
-    const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { slug: true } });
+    const { slug, id: projectId } = req.project;
     const zip = new AdmZip(req.file.buffer);
     const entries = zip.getEntries();
     const scriptsRoot = process.env.SCRIPTS_ROOT ?? '/scripts';
-    const scriptsDest = path.join(scriptsRoot, project.slug, 'scripts');
-    const resourcesDest = path.join(scriptsRoot, project.slug, 'resources');
-    fs.mkdirSync(scriptsDest, { recursive: true });
-    fs.mkdirSync(resourcesDest, { recursive: true });
+
+    // Everything lands under the project root — preserving the original folder structure so that
+    // relative Resource/Library paths in .robot files continue to resolve correctly at runtime.
+    const projectRootDir = path.join(scriptsRoot, slug);
+    fs.mkdirSync(projectRootDir, { recursive: true });
 
     const results: { filename: string; testCasesCreated: number }[] = [];
-    const resourcesCopied: string[] = [];
     const warnings: string[] = [];
+
+    // Pre-fetch max tcId number so we can generate sequential IDs across all files
+    const existingTcIds = await prisma.testCase.findMany({ where: { projectId }, select: { tcId: true } });
+    const tcPrefix = slug.replace(/[^a-z0-9]/gi, '').slice(0, 6).toUpperCase() || 'TC';
+    let tcCounter = existingTcIds.reduce((max, { tcId }) => {
+      const m = tcId.match(/(\d+)$/);
+      return m ? Math.max(max, parseInt(m[1], 10)) : max;
+    }, 0);
+
+    // ── Noise filters ──────────────────────────────────────────────────────
+    // Dirs to skip entirely
+    const SKIP_DIRS = new Set([
+      '__pycache__', '.git', 'node_modules', '.venv', 'venv', '.idea', '.github',
+      'log', 'logs', 'rerun_results', 'rerun',
+    ]);
+    // File extensions that are RF run artifacts or compiled bytecode — never useful
+    const SKIP_EXTS = new Set(['.html', '.xml', '.pyc', '.pyo']);
+    // Specific artifact filenames (belt-and-suspenders for .html/.xml above)
+    const SKIP_FILES = new Set(['log.html', 'output.xml', 'report.html', 'debug.xml', 'xunit.xml', 'output2.xml']);
+
+    const shouldSkipSegment = (seg: string) =>
+      SKIP_DIRS.has(seg) || seg.startsWith('.') || /^downloads_/i.test(seg);
+
+    // ── Strip single top-level root folder if the whole zip is inside one ──
+    const topLevel = entries
+      .filter((e) => !e.isDirectory)
+      .map((e) => e.entryName.replace(/\\/g, '/').split('/')[0])
+      .reduce<string | null>((acc, seg) => (acc === undefined || acc === seg ? seg : null), undefined as unknown as null);
+    const stripPrefix = topLevel ? topLevel + '/' : '';
 
     for (const entry of entries) {
       if (entry.isDirectory) continue;
-      const entryName = entry.entryName.replace(/\\/g, '/');
+
+      const rawName = entry.entryName.replace(/\\/g, '/');
+      const segments = rawName.split('/');
+
+      // Skip any path that passes through a noisy directory
+      if (segments.some((seg) => shouldSkipSegment(seg))) continue;
+
+      // Strip single root folder prefix
+      const entryName = rawName.startsWith(stripPrefix) ? rawName.slice(stripPrefix.length) : rawName;
+      if (!entryName) continue;
+
       const filename = path.basename(entryName);
+      const ext = path.extname(filename).toLowerCase();
 
-      // Resource files: anything under Resource/ or resource/ (non-.robot or keyword files)
-      const isResourcePath = /\/(resource|Resource|resources|Resources)\//i.test('/' + entryName);
-      if (isResourcePath) {
-        // keep relative sub-path under resource dir
-        const resourceBase = entryName.replace(/^.*?\/(resource|Resource|resources|Resources)\//i, '');
-        const destPath = path.join(resourcesDest, resourceBase);
-        fs.mkdirSync(path.dirname(destPath), { recursive: true });
-        fs.writeFileSync(destPath, entry.getData());
-        await prisma.projectResource.upsert({
-          where: { projectId_filename: { projectId, filename: resourceBase } },
-          create: { projectId, filename: resourceBase, originalName: filename, size: entry.getData().length },
-          update: { size: entry.getData().length },
-        }).catch(() => {/* ignore if model differs */});
-        resourcesCopied.push(resourceBase);
-        continue;
-      }
+      // Skip run-artifact file types and known noisy filenames
+      if (SKIP_EXTS.has(ext) || SKIP_FILES.has(filename)) continue;
 
-      // Test scripts: .robot files outside resource dirs
-      if (!filename.endsWith('.robot')) continue;
+      // Destination: preserve the full relative path under the project root
+      const destPath = path.join(projectRootDir, entryName);
+      fs.mkdirSync(path.dirname(destPath), { recursive: true });
+      fs.writeFileSync(destPath, entry.getData());
 
+      // Only .robot files inside TestCases get DB script records + TC auto-creation.
+      // All other files (resource .robot files, xlsx, yaml, etc.) are written to disk above and skipped here.
+      const isTestScript = filename.endsWith('.robot') &&
+        /\/(TestCases)\//i.test('/' + entryName);
+
+      if (!isTestScript) continue;
+
+      // ── .robot test script ────────────────────────────────────────────────
       const content = entry.getData().toString('utf-8');
-      const destPath = path.join(scriptsDest, filename);
-      fs.writeFileSync(destPath, content, 'utf-8');
+
+      // Derive use-case group from folder structure.
+      // e.g. "TestCases/Primary Sales & Return/TC01.robot" → "Primary Sales & Return"
+      const pathParts = entryName.split('/');
+      const useCaseTag: string | null =
+        pathParts.length >= 3 && /^TestCases$/i.test(pathParts[0])
+          ? pathParts[1]
+          : null;
 
       // Parse test case names from *** Test Cases *** section
       const tcNames: string[] = [];
@@ -398,28 +724,53 @@ router.post('/import-folder', requireProjectAccess as RequestHandler, folderUplo
         }
       }
 
-      // Upsert script
+      // Upsert script — filename is the full relative path (e.g. TestCases/Primary Sales/TC01.robot)
       const script = await prisma.script.upsert({
-        where: { projectId_filename: { projectId, filename } },
-        create: { projectId, filename, content, scriptType: 'ROBOT' },
+        where: { projectId_filename: { projectId, filename: entryName } },
+        create: { projectId, filename: entryName, content, scriptType: 'ROBOT' },
         update: { content },
       });
 
-      // Create test cases
+      // Auto-create test cases, grouped under the use-case derived from the folder name
       let tcCreated = 0;
       for (const name of tcNames) {
-        const existing = await prisma.testCase.findFirst({ where: { projectId, title: name } });
+        const existing = await prisma.testCase.findFirst({
+          where: {
+            projectId,
+            title: name,
+            // Scope duplicate-name check to the same use-case folder so that
+            // the same TC name under different folders creates separate records.
+            ...(useCaseTag ? { useCaseTag } : {}),
+          },
+          include: { scripts: { select: { id: true } } },
+        });
         if (!existing) {
+          tcCounter++;
           await prisma.testCase.create({
-            data: { projectId, title: name, type: 'UI', status: 'DRAFT', scripts: { connect: { id: script.id } } },
+            data: {
+              projectId,
+              tcId: `${tcPrefix}-${String(tcCounter).padStart(3, '0')}`,
+              title: name, type: 'UI', status: 'DRAFT', expectedResult: '',
+              ...(useCaseTag ? { useCaseTag } : {}),
+              scripts: { connect: { id: script.id } },
+            },
           });
           tcCreated++;
+        } else {
+          // TC already exists — ensure it is linked to this script and backfill useCaseTag
+          const alreadyLinked = existing.scripts.some((s) => s.id === script.id);
+          if (!alreadyLinked) {
+            await prisma.testCase.update({ where: { id: existing.id }, data: { scripts: { connect: { id: script.id } } } });
+          }
+          if (useCaseTag && !existing.useCaseTag) {
+            await prisma.testCase.update({ where: { id: existing.id }, data: { useCaseTag } });
+          }
         }
       }
-      results.push({ filename, testCasesCreated: tcCreated });
+      results.push({ filename: entryName, testCasesCreated: tcCreated });
     }
 
-    res.json({ imported: results, resources: resourcesCopied, warnings });
+    res.json({ imported: results, warnings });
   } catch (err) { next(err); }
 });
 

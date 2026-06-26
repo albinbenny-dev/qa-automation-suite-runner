@@ -3,7 +3,8 @@ import type { Script } from '../../types';
 
 export type EditorTab =
   | { kind: 'script'; id: string; filename: string; script: Script }
-  | { kind: 'resource'; id: string; filename: string };
+  | { kind: 'resource'; id: string; filename: string }
+  | { kind: 'projectfile'; id: string; filename: string; path: string };
 
 interface EditorTabsProps {
   tabs: EditorTab[];
@@ -68,8 +69,9 @@ function Tab({
   const [closeHover, setCloseHover] = React.useState(false);
   const [tabHover, setTabHover] = React.useState(false);
   const isResource = tab.kind === 'resource';
-  const activeColor = isResource ? 'var(--emerald)' : '#60a5fa';
-  const activeBg = isResource ? 'rgba(42,157,143,0.08)' : 'rgba(96,165,250,0.08)';
+  const isProjectFile = tab.kind === 'projectfile';
+  const activeColor = isResource ? 'var(--emerald)' : isProjectFile ? '#f59e0b' : '#60a5fa';
+  const activeBg = isResource ? 'rgba(42,157,143,0.08)' : isProjectFile ? 'rgba(245,158,11,0.08)' : 'rgba(96,165,250,0.08)';
 
   return (
     <div
@@ -114,9 +116,8 @@ function Tab({
       )}
 
       {/* Icon */}
-      {isResource && (
-        <span style={{ fontSize: 11, flexShrink: 0 }}>🤖</span>
-      )}
+      {isResource && <span style={{ fontSize: 11, flexShrink: 0 }}>🤖</span>}
+      {isProjectFile && <span style={{ fontSize: 11, flexShrink: 0 }}>📄</span>}
 
       {/* Filename */}
       <span

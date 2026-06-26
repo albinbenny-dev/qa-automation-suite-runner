@@ -1,7 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { prisma } from '../lib/prisma.js';
-import { runReportsAgent } from '../agents/reportsAgent.js';
 import { sendRunReport } from './emailService.js';
 
 // ── Email config storage ───────────────────────────────────────────────────
@@ -111,10 +110,13 @@ export async function generateReport(runId: string): Promise<void> {
       error: r.errorMessage ?? 'Unknown error',
     }));
 
-  const analysis = await runReportsAgent({
-    runSummary: { total, passed, failed, duration },
-    failedTests,
-  });
+  const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
+  const analysis = {
+    summary: `Run completed: ${passed}/${total} tests passed (${passRate}% pass rate, ${Math.round(duration / 1000)}s).${failed > 0 ? ` ${failed} test${failed > 1 ? 's' : ''} failed.` : ''}`,
+    severity: failed > 0 ? (failed / total > 0.5 ? 'HIGH' : 'MEDIUM') : 'LOW',
+    rootCauses: [] as string[],
+    recommendations: failedTests.map((t) => `Review: ${t.title} — ${t.error}`),
+  };
 
   const report = await prisma.report.upsert({
     where: { runId },
@@ -159,13 +161,12 @@ export async function generateReport(runId: string): Promise<void> {
 // ── getProjectStats ────────────────────────────────────────────────────────
 
 export async function getProjectStats(projectId: string): Promise<ProjectStats> {
-  const [totalTests, scriptsGenerated, totalRuns, activeSchedules, pendingHeals, lastRun, allResults] =
+  const [totalTests, scriptsGenerated, totalRuns, activeSchedules, lastRun, allResults] =
     await Promise.all([
       prisma.testCase.count({ where: { projectId } }),
       prisma.script.count({ where: { projectId } }),
       prisma.run.count({ where: { projectId } }),
       prisma.schedule.count({ where: { projectId, isActive: true } }),
-      prisma.heal.count({ where: { projectId, status: 'PENDING' } }),
       prisma.run.findFirst({
         where: { projectId, status: { in: ['PASSED', 'FAILED'] } },
         orderBy: { completedAt: 'desc' },
@@ -258,7 +259,7 @@ export async function getProjectStats(projectId: string): Promise<ProjectStats> 
     lastRunFailCount,
     avgPassRate,
     activeSchedules,
-    pendingHeals,
+    pendingHeals: 0,
     flakyTests,
   };
 }
@@ -349,35 +350,16 @@ export async function getTopSuites(projectId: string): Promise<TopSuiteEntry[]> 
 
 // ── getProjectTokenUsage ───────────────────────────────────────────────────
 
-export async function getProjectTokenUsage(projectId: string): Promise<number> {
-  const agg = await prisma.llmCall.aggregate({
-    where: { projectId },
-    _sum: { totalTokens: true },
-  });
-  return agg._sum.totalTokens ?? 0;
+export async function getProjectTokenUsage(_projectId: string): Promise<number> {
+  return 0;
 }
 
 // ── getAgentStatuses ───────────────────────────────────────────────────────
 
 export async function getAgentStatuses(projectId: string): Promise<AgentStatus[]> {
-  const [activeRuns, activeHeals] = await Promise.all([
-    prisma.run.count({ where: { projectId, status: { in: ['RUNNING', 'PENDING'] } } }),
-    prisma.heal.count({ where: { projectId, status: 'PENDING' } }),
-  ]);
+  const activeRuns = await prisma.run.count({ where: { projectId, status: { in: ['RUNNING', 'PENDING'] } } });
 
   return [
-    {
-      name: 'writer',
-      label: 'Test Writer',
-      status: 'idle',
-      detail: 'Ready',
-    },
-    {
-      name: 'scripts',
-      label: 'Script Agent',
-      status: 'idle',
-      detail: 'Ready',
-    },
     {
       name: 'execution',
       label: 'Execution Engine',
@@ -385,15 +367,9 @@ export async function getAgentStatuses(projectId: string): Promise<AgentStatus[]
       detail: activeRuns > 0 ? `${activeRuns} run${activeRuns > 1 ? 's' : ''} active` : 'All clear',
     },
     {
-      name: 'healing',
-      label: 'Healing Agent',
-      status: activeHeals > 0 ? 'busy' : 'ok',
-      detail: activeHeals > 0 ? `${activeHeals} pending` : 'No pending heals',
-    },
-    {
       name: 'reports',
-      label: 'Reports Agent',
-      status: 'ok',
+      label: 'Reports',
+      status: 'ok' as const,
       detail: 'Ready',
     },
   ];

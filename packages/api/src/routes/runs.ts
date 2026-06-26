@@ -14,19 +14,21 @@ import { emitToRun } from '../lib/socket.js';
 
 const CreateRunSchema = z.object({
   testCaseIds: z.array(z.string().cuid()).min(1),
-  environment: z.string().min(1),
+  environment: z.string().transform(s => s.trim() || 'default'),
   parallelWorkers: z.number().int().min(1).max(8).default(2),
   headless: z.boolean().default(true),
   browser: z.enum(['chrome', 'firefox']).default('chrome'),
   name: z.string().max(200).optional(),
+  record: z.boolean().default(true),
 });
 
 const CreateGroupRunSchema = z.object({
   useCaseTag: z.string().min(1),
-  environment: z.string().min(1),
+  environment: z.string().transform(s => s.trim() || 'default'),
   parallelWorkers: z.number().int().min(1).max(8).default(2),
   headless: z.boolean().default(true),
   browser: z.enum(['chrome', 'firefox']).default('chrome'),
+  record: z.boolean().default(true),
 });
 
 const CreateScheduleSchema = z.object({
@@ -101,27 +103,33 @@ async function resolveScriptPaths(
 
   for (const s of scripts.filter((s): s is typeof s & { testCaseId: string } => s.testCaseId !== null)) {
     const slug = project?.slug ?? projectId;
+    // Hierarchy import: filename is a relative path (e.g. TestCases/foo/TC01.robot)
+    const slugRootPath    = `${SCRIPTS_ROOT}/${slug}/${s.filename}`;
+    // Legacy flat import: filename is just a basename (e.g. TC01.robot) under scripts/ subdir
     const slugScriptsPath = `${SCRIPTS_ROOT}/${slug}/scripts/${s.filename}`;
-    const cuidPath = `${SCRIPTS_ROOT}/${projectId}/${s.filename}`;
+    const cuidPath        = `${SCRIPTS_ROOT}/${projectId}/${s.filename}`;
     const sourceRef = s.testCase?.sourceRef;
     const sourceRefPath = sourceRef ? `${SCRIPTS_ROOT}/${slug}/${sourceRef}` : null;
 
-    if (fs.existsSync(slugScriptsPath)) {
+    if (fs.existsSync(slugRootPath)) {
+      // Hierarchy layout — file lives at project root with full relative path preserved
+      results.push({ testCaseId: s.testCaseId, scriptPath: slugRootPath });
+    } else if (fs.existsSync(slugScriptsPath)) {
       results.push({ testCaseId: s.testCaseId, scriptPath: slugScriptsPath });
     } else if (fs.existsSync(cuidPath)) {
       results.push({ testCaseId: s.testCaseId, scriptPath: cuidPath });
     } else if (sourceRefPath && fs.existsSync(sourceRefPath)) {
       results.push({ testCaseId: s.testCaseId, scriptPath: sourceRefPath });
     } else if (s.content) {
-      // Script is in the DB but not on disk (e.g. volume was reset, or file was never flushed).
-      // Write it to the canonical slug-based path so the runner can execute it.
-      const dir = path.dirname(slugScriptsPath);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(slugScriptsPath, s.content, 'utf-8');
-      results.push({ testCaseId: s.testCaseId, scriptPath: slugScriptsPath });
+      // Script is in the DB but not on disk — restore it to the appropriate location.
+      const isHierarchy = s.filename.includes('/');
+      const restorePath = isHierarchy ? slugRootPath : slugScriptsPath;
+      fs.mkdirSync(path.dirname(restorePath), { recursive: true });
+      fs.writeFileSync(restorePath, s.content, 'utf-8');
+      results.push({ testCaseId: s.testCaseId, scriptPath: restorePath });
     } else {
       // No content anywhere — runner will fail with a clear file-not-found error.
-      results.push({ testCaseId: s.testCaseId, scriptPath: slugScriptsPath });
+      results.push({ testCaseId: s.testCaseId, scriptPath: slugRootPath });
     }
   }
 
@@ -284,6 +292,7 @@ router.post('/schedules/:id/run-now', async (req: Request, res: Response, next: 
       parallelWorkers: 2,
       headless: true,
       browser: 'chrome',
+      record: req.project.videoEnabled !== false,
       triggerType: 'SCHEDULED',
     });
 
@@ -316,6 +325,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       return;
     }
     const { testCaseIds, environment, parallelWorkers, headless, browser, name } = parsed.data;
+    const record = req.project.videoEnabled !== false;
 
     if (!await checkRunRateLimit(req.project.id, req.user.id, res)) return;
 
@@ -352,6 +362,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       parallelWorkers,
       headless,
       browser,
+      record,
       triggerType: 'MANUAL',
     });
 
@@ -409,6 +420,7 @@ router.post('/individual/:testCaseId', async (req: Request, res: Response, next:
       parallelWorkers: 1,
       headless,
       browser,
+      record: req.project.videoEnabled !== false,
       triggerType: 'INDIVIDUAL',
     });
 
@@ -425,6 +437,7 @@ router.post('/group', async (req: Request, res: Response, next: NextFunction) =>
       return;
     }
     const { useCaseTag, environment, parallelWorkers, headless, browser } = parsed.data;
+    const record = req.project.videoEnabled !== false;
 
     if (!await checkRunRateLimit(req.project.id, req.user.id, res)) return;
 
@@ -471,6 +484,7 @@ router.post('/group', async (req: Request, res: Response, next: NextFunction) =>
       parallelWorkers,
       headless,
       browser,
+      record,
       triggerType: 'GROUP',
     });
 
@@ -574,6 +588,7 @@ router.post('/:runId/retry', async (req: Request, res: Response, next: NextFunct
       parallelWorkers: 2,
       headless: true,
       browser: 'chrome',
+      record: req.project.videoEnabled !== false,
       triggerType: 'MANUAL',
     });
 

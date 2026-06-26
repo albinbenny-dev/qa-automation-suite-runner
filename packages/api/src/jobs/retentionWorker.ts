@@ -26,43 +26,13 @@ function getConfig() {
 
 async function runDbRetention(): Promise<void> {
   const cfg = getConfig();
-  const healCutoff      = daysAgo(cfg.healDays);
   const runResultCutoff = daysAgo(cfg.runResultDays);
-  const llmCallCutoff   = daysAgo(cfg.llmCallDays);
 
-  // Step 1 — Delete old Heals first (they hold the FK to AgentTrace; removing them
-  //          before AgentTrace avoids FK violation on the subsequent AgentTrace delete).
-  const { count: healCount } = await prisma.heal.deleteMany({
-    where: { createdAt: { lt: healCutoff } },
-  });
-
-  // Step 2 — Delete old AgentTraces.
-  //          Any remaining Heal rows that still point to traces being deleted must be
-  //          null-ed first (edge case: trace older than heal threshold but heal is recent).
-  const oldTraces = await prisma.agentTrace.findMany({
-    where: { createdAt: { lt: healCutoff } },
-    select: { id: true },
-  });
-  let traceCount = 0;
-  if (oldTraces.length > 0) {
-    const ids = oldTraces.map((t) => t.id);
-    await prisma.heal.updateMany({
-      where: { agentTraceId: { in: ids } },
-      data: { agentTraceId: null },
-    });
-    const { count } = await prisma.agentTrace.deleteMany({ where: { id: { in: ids } } });
-    traceCount = count;
-  }
-
-  // Step 3 — Delete old RunResults (cascades to any remaining Heals via onDelete: Cascade).
+  // Step 1 — Delete old RunResults.
   const { count: rrCount } = await prisma.runResult.deleteMany({
     where: { createdAt: { lt: runResultCutoff } },
   });
-
-  // Step 4 — Delete old LlmCall rows.
-  const { count: llmCount } = await prisma.llmCall.deleteMany({
-    where: { createdAt: { lt: llmCallCutoff } },
-  });
+  const healCount = 0, traceCount = 0, llmCount = 0;
 
   // Step 5 — Apply MAX_RUNS_PER_PROJECT hard cap.
   //          Only terminal runs are eligible; in-flight runs are never deleted.

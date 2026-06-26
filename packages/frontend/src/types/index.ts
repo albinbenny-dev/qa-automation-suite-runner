@@ -21,6 +21,7 @@ export interface Project {
   baseUrl?: string;
   color?: string;
   reqLibraryPath?: string;
+  videoEnabled?: boolean;
   createdAt: string;
   createdBy: string;
   /** The authenticated user's role in this project (injected by GET /projects) */

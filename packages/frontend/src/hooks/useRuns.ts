@@ -26,8 +26,9 @@ export interface CreateRunPayload {
   environment: string;
   parallelWorkers?: number;
   headless?: boolean;
-  browser?: 'chromium' | 'firefox' | 'webkit';
+  browser?: 'chromium' | 'firefox' | 'webkit' | 'chrome';
   name?: string;
+  record?: boolean;
 }
 
 export interface CreateGroupRunPayload {
@@ -35,7 +36,8 @@ export interface CreateGroupRunPayload {
   environment: string;
   parallelWorkers?: number;
   headless?: boolean;
-  browser?: 'chromium' | 'firefox' | 'webkit';
+  browser?: 'chromium' | 'firefox' | 'webkit' | 'chrome';
+  record?: boolean;
 }
 
 // ── Hooks ──────────────────────────────────────────────────────────────────

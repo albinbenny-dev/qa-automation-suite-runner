@@ -446,6 +446,7 @@ export default function Execution() {
         parallelWorkers,
         headless: false,
         browser: 'chrome',
+        record: true,
       });
       setActiveRunId(run.id);
       setWatchedRunId(run.id);
@@ -470,6 +471,7 @@ export default function Execution() {
         parallelWorkers,
         headless: false,
         browser: 'chrome',
+        record: true,
       });
       setActiveRunId(run.id);
       setWatchedRunId(run.id);
@@ -576,48 +578,6 @@ export default function Execution() {
               padding: '6px 10px',
               overflow: 'hidden',
             }}>
-              <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.8px', flexShrink: 0 }}>
-                Env
-              </span>
-              {envConfigs.length === 0 ? (
-                <span
-                  style={{ fontSize: 10, color: 'var(--cyan)', cursor: 'pointer', textDecoration: 'underline', flexShrink: 0 }}
-                  onClick={() => navigate(`/projects/${slug}/settings`)}
-                >
-                  Add env in Settings
-                </span>
-              ) : (
-                <select
-                  value={environment}
-                  onChange={(e) => setEnvironment(e.target.value)}
-                  style={{
-                    width: 110, flexShrink: 0,
-                    padding: '4px 20px 4px 7px',
-                    borderRadius: 5, fontSize: 11, fontWeight: 600,
-                    fontFamily: 'var(--font-ui)',
-                    background: 'var(--surface3)',
-                    border: '1px solid rgba(42,157,143,0.35)',
-                    color: 'var(--text)', cursor: 'pointer', outline: 'none', appearance: 'none',
-                    backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='9' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E")`,
-                    backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center',
-                  }}
-                >
-                  {envConfigs.map((cfg) => (
-                    <option key={cfg.id} value={cfg.name}>{cfg.name}{cfg.isDefault ? ' ★' : ''}</option>
-                  ))}
-                </select>
-              )}
-              {envBaseUrl && (
-                <span style={{
-                  fontFamily: 'var(--font-mono)', fontSize: 9, color: '#2A9D8F',
-                  background: 'rgba(42,157,143,0.06)', padding: '2px 6px', borderRadius: 3,
-                  border: '1px solid rgba(42,157,143,0.15)',
-                  flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                }}>
-                  {envBaseUrl}
-                </span>
-              )}
-              <div style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
               <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.8px', flexShrink: 0 }}>W</span>
               <Stepper value={parallelWorkers} onChange={updateWorkers} max={16} />
               {canWrite && <button

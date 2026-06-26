@@ -415,24 +415,31 @@ router.get('/health', (async (req, res) => {
 // ── GET /keywords/index — keyword-name → {filename, line} map ────────────
 
 router.get('/keywords/index', (async (req, res) => {
-  const { projectId: _projectId } = req.params;
   const slug = projectSlug(req);
   try {
-    const files = listResourceFiles(slug);
+    const projectRoot = path.join(SCRIPTS_ROOT, slug);
     const index: Record<string, { filename: string; line: number }> = {};
-    for (const f of files) {
-      if (f.isBinary) continue;
-      const ext = path.extname(f.filename).toLowerCase();
-      if (ext !== '.robot' && ext !== '.resource') continue;
-      const filePath = path.join(resourcesDir(slug), f.filename);
-      if (!fs.existsSync(filePath)) continue;
-      const content = fs.readFileSync(filePath, 'utf-8');
-      for (const kw of extractRobotKeywordsWithLines(content)) {
-        if (!index[kw.name]) {
-          index[kw.name] = { filename: f.filename, line: kw.line };
-        }
+
+    function walk(dir: string) {
+      if (!fs.existsSync(dir)) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        const ext = path.extname(entry.name).toLowerCase();
+        if (ext !== '.robot' && ext !== '.resource') continue;
+        const relPath = path.relative(projectRoot, full).replace(/\\/g, '/');
+        try {
+          const content = fs.readFileSync(full, 'utf-8');
+          for (const kw of extractRobotKeywordsWithLines(content)) {
+            if (!index[kw.name]) {
+              index[kw.name] = { filename: relPath, line: kw.line };
+            }
+          }
+        } catch { /* skip unreadable files */ }
       }
     }
+
+    walk(projectRoot);
     res.json(index);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

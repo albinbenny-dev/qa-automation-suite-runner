@@ -11,33 +11,35 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     fonts-liberation libappindicator3-1 libdbus-glib-1-2 xdg-utils \
     # Firefox deps
     libgtk-3-0 libdbus-1-3 libxt6 \
-    # VNC / display
-    xvfb x11vnc novnc python3-websockify openbox x11-apps \
+    # VNC / display + video recording
+    xvfb x11vnc novnc python3-websockify openbox x11-apps xauth ffmpeg \
     # Node 20
     nodejs npm \
   && rm -rf /var/lib/apt/lists/*
 
-# ── Google Chrome stable ─────────────────────────────────────────────────────
-RUN wget -q -O /tmp/chrome.deb \
-    "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" \
-  && dpkg -i /tmp/chrome.deb || apt-get -f install -y \
-  && rm /tmp/chrome.deb
-
-# ── ChromeDriver (matching Chrome version) ───────────────────────────────────
-RUN CHROME_VER=$(google-chrome --version | grep -oP '[\d.]+' | head -1) \
-  && CHROMEDRIVER_VER=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VER%%.*}") \
-  && curl -sL "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VER}/chromedriver_linux64.zip" -o /tmp/cd.zip \
-  && unzip /tmp/cd.zip -d /usr/local/bin/ \
-  && chmod +x /usr/local/bin/chromedriver \
-  && rm /tmp/cd.zip
+# ── Chrome for Testing + matching ChromeDriver (guaranteed version parity) ────
+RUN CFT_VER=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json" \
+      | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['channels']['Stable']['version'])") \
+  && echo "Chrome for Testing version: $CFT_VER" \
+  # Chrome binary
+  && curl -sL "https://storage.googleapis.com/chrome-for-testing-public/${CFT_VER}/linux64/chrome-linux64.zip" -o /tmp/chrome.zip \
+  && unzip -q /tmp/chrome.zip -d /opt/ \
+  && ln -sf /opt/chrome-linux64/chrome /usr/local/bin/google-chrome \
+  && ln -sf /opt/chrome-linux64/chrome /usr/local/bin/chromium-browser \
+  # ChromeDriver — exact same version
+  && curl -sL "https://storage.googleapis.com/chrome-for-testing-public/${CFT_VER}/linux64/chromedriver-linux64.zip" -o /tmp/cd.zip \
+  && unzip -q /tmp/cd.zip -d /tmp/cd/ \
+  && mv /tmp/cd/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver \
+  && chmod +x /usr/local/bin/chromedriver /opt/chrome-linux64/chrome \
+  && rm -rf /tmp/chrome.zip /tmp/cd.zip /tmp/cd/ \
+  && google-chrome --version && chromedriver --version
 
 # ── Firefox ESR ─────────────────────────────────────────────────────────────
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends firefox-esr \
   && rm -rf /var/lib/apt/lists/*
 
-# ── GeckoDriver ─────────────────────────────────────────────────────────────
-RUN GECKO_VER=$(curl -s "https://api.github.com/repos/mozilla/geckodriver/releases/latest" | grep '"tag_name"' | grep -oP 'v[\d.]+') \
-  && curl -sL "https://github.com/mozilla/geckodriver/releases/download/${GECKO_VER}/geckodriver-${GECKO_VER}-linux64.tar.gz" \
+# ── GeckoDriver (pinned stable) ──────────────────────────────────────────────
+RUN curl -sL "https://github.com/mozilla/geckodriver/releases/download/v0.36.0/geckodriver-v0.36.0-linux64.tar.gz" \
      | tar -xz -C /usr/local/bin/ \
   && chmod +x /usr/local/bin/geckodriver
 
@@ -47,7 +49,13 @@ RUN pip install --no-cache-dir \
     robotframework-seleniumlibrary \
     selenium \
     pandas \
-    openpyxl
+    openpyxl \
+    pyyaml
+
+# Inject --no-sandbox flags into every Chrome session (required in Docker)
+COPY packages/runner/sitecustomize.py /tmp/sitecustomize.py
+RUN python3 -c "import site; sp=site.getsitepackages(); print(sp[0])" \
+    | xargs -I{} cp /tmp/sitecustomize.py {}/sitecustomize.py
 
 WORKDIR /app
 
@@ -56,6 +64,8 @@ COPY packages/runner/package.json ./packages/runner/
 RUN cd packages/runner && npm install --omit=dev
 
 COPY packages/runner/src ./packages/runner/src
+COPY packages/runner/start.sh /start.sh
+RUN chmod +x /start.sh
 
 # Volumes mounted at runtime
 VOLUME ["/scripts", "/artifacts"]
@@ -66,4 +76,4 @@ EXPOSE 6080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
   CMD curl -f http://localhost:5001/health || exit 1
 
-CMD ["node", "packages/runner/src/index.js"]
+CMD ["/start.sh"]

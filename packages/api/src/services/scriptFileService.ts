@@ -1,32 +1,49 @@
 import fs from 'fs';
 import path from 'path';
-import JSZip from 'jszip';
+import AdmZip from 'adm-zip';
 
 const SCRIPTS_ROOT = process.env.SCRIPTS_ROOT ?? '/scripts';
 
+// Project root — the top-level directory for a project (holds full folder structure for hierarchy imports)
+function projectRoot(slug: string): string {
+  return path.join(SCRIPTS_ROOT, slug);
+}
+
+// Legacy flat scripts subdir — single-file uploads still land here
 function projectDir(slug: string): string {
   return path.join(SCRIPTS_ROOT, slug, 'scripts');
 }
-
 
 function ensureDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-export function saveScript(slug: string, filename: string, content: string): void {
-  ensureDir(projectDir(slug));
-  fs.writeFileSync(path.join(projectDir(slug), filename), content, 'utf-8');
+// Resolve the on-disk path for a script filename.
+// Hierarchy imports store filename as a relative path (e.g. TestCases/foo/TC01.robot).
+// Flat uploads store just the basename (e.g. TC01.robot) under the scripts/ subdir.
+function resolveScriptPath(slug: string, filename: string): string {
+  const rootPath = path.join(projectRoot(slug), filename);
+  if (fs.existsSync(rootPath)) return rootPath;
+  return path.join(projectDir(slug), filename); // fallback to legacy flat location
 }
 
+export function saveScript(slug: string, filename: string, content: string): void {
+  // Hierarchy filenames (contain path separators) go under project root; flat filenames go under scripts/ subdir
+  const dest = filename.includes('/') || filename.includes(path.sep)
+    ? path.join(projectRoot(slug), filename)
+    : path.join(projectDir(slug), filename);
+  ensureDir(path.dirname(dest));
+  fs.writeFileSync(dest, content, 'utf-8');
+}
 
 export function readScript(slug: string, filename: string): string {
-  const filePath = path.join(projectDir(slug), filename);
+  const filePath = resolveScriptPath(slug, filename);
   if (!fs.existsSync(filePath)) throw new Error(`Script file not found: ${filename}`);
   return fs.readFileSync(filePath, 'utf-8');
 }
 
 export function deleteScript(slug: string, filename: string): void {
-  const filePath = path.join(projectDir(slug), filename);
+  const filePath = resolveScriptPath(slug, filename);
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 }
 
@@ -36,62 +53,85 @@ export interface ScriptFileMeta {
   modifiedAt: string;
 }
 
-export function listScriptFiles(slug: string): ScriptFileMeta[] {
-  const dir = projectDir(slug);
-  if (!fs.existsSync(dir)) return [];
+// Dirs that should never be scanned for scripts
+const SCAN_SKIP_DIRS = new Set([
+  '__pycache__', '.git', 'node_modules', '.venv', 'venv', '.idea', '.github',
+  'log', 'logs', 'rerun_results', 'rerun',
+]);
 
-  return fs
-    .readdirSync(dir)
-    .filter((f) => {
-      const abs = path.join(dir, f);
-      return (
-        fs.statSync(abs).isFile() &&
-        f.endsWith('.robot')
-      );
-    })
-    .map((f) => {
-      const stat = fs.statSync(path.join(dir, f));
-      return { filename: f, size: stat.size, modifiedAt: stat.mtime.toISOString() };
-    });
+function shouldSkipDir(name: string): boolean {
+  return SCAN_SKIP_DIRS.has(name) || name.startsWith('.') || /^downloads_/i.test(name);
 }
 
+// Recursively find all .robot files under a directory, returning relative paths from baseDir.
+function scanRobotFiles(dir: string, baseDir: string): ScriptFileMeta[] {
+  if (!fs.existsSync(dir)) return [];
+  const results: ScriptFileMeta[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (!shouldSkipDir(entry.name)) {
+        results.push(...scanRobotFiles(path.join(dir, entry.name), baseDir));
+      }
+    } else if (entry.isFile() && entry.name.endsWith('.robot')) {
+      const abs = path.join(dir, entry.name);
+      const rel = path.relative(baseDir, abs).replace(/\\/g, '/');
+      const stat = fs.statSync(abs);
+      results.push({ filename: rel, size: stat.size, modifiedAt: stat.mtime.toISOString() });
+    }
+  }
+  return results;
+}
+
+export function listScriptFiles(slug: string): ScriptFileMeta[] {
+  const root = projectRoot(slug);
+  return scanRobotFiles(root, root);
+}
 
 export function getScriptFileMeta(slug: string, filename: string): ScriptFileMeta | null {
-  const filePath = path.join(projectDir(slug), filename);
+  const filePath = resolveScriptPath(slug, filename);
   if (!fs.existsSync(filePath)) return null;
   const stat = fs.statSync(filePath);
   return { filename, size: stat.size, modifiedAt: stat.mtime.toISOString() };
 }
 
-export async function exportZip(slug: string, filenames?: string[]): Promise<Buffer> {
-  const zip = new JSZip();
-  const dir = projectDir(slug);
-  const res = resourcesDir(slug);
+export function exportZip(slug: string, filenames?: string[]): Buffer {
+  const zip = new AdmZip();
+  const root = projectRoot(slug);
 
-  // Add .robot files
-  if (fs.existsSync(dir)) {
-    const files = fs.readdirSync(dir).filter((f) => {
-      const abs = path.join(dir, f);
-      if (!fs.statSync(abs).isFile()) return false;
-      if (filenames) return filenames.includes(f);
-      return f.endsWith('.robot');
-    });
-    for (const f of files) {
-      zip.file(f, fs.readFileSync(path.join(dir, f)));
+  // Add all .robot files (or only the requested subset), preserving folder structure
+  const all = listScriptFiles(slug);
+  const toExport = filenames
+    ? all.filter((m) => filenames.includes(m.filename) || filenames.includes(path.basename(m.filename)))
+    : all;
+
+  for (const meta of toExport) {
+    const abs = path.join(root, meta.filename);
+    if (fs.existsSync(abs)) {
+      zip.addFile(meta.filename, fs.readFileSync(abs));
     }
   }
 
-  // Always include resources/ folder (Robot Framework resource files)
-  if (fs.existsSync(res)) {
-    for (const f of fs.readdirSync(res)) {
-      const abs = path.join(res, f);
-      if (fs.statSync(abs).isFile()) {
-        zip.file(`resources/${f}`, fs.readFileSync(abs));
+  // Include the full resource tree (non-.robot files)
+  const addDirToZip = (dir: string, zipPrefix: string) => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!shouldSkipDir(entry.name)) {
+          addDirToZip(path.join(dir, entry.name), `${zipPrefix}${entry.name}/`);
+        }
+      } else if (entry.isFile() && !entry.name.endsWith('.robot')) {
+        const abs = path.join(dir, entry.name);
+        zip.addFile(`${zipPrefix}${entry.name}`, fs.readFileSync(abs));
       }
     }
+  };
+
+  // Only recurse into known resource dirs to avoid bundling huge venv/node_modules
+  for (const subdir of ['Resource', 'resources', 'TextFiles', 'PageObjects']) {
+    addDirToZip(path.join(root, subdir), `${subdir}/`);
   }
 
-  return zip.generateAsync({ type: 'nodebuffer' });
+  return zip.toBuffer();
 }
 
 // ── Resource file helpers ─────────────────────────────────────────────────

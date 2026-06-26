@@ -16,17 +16,15 @@ import {
   useSaveScriptContent,
   useDeleteScript,
   useUploadScript,
+  useProjectFileTree,
+  useDeleteProjectFile,
+  useMoveProjectFile,
+  useUploadProjectFile,
+  useCreateProjectFolder,
+  downloadProjectFile,
+  type FileTreeNode,
 } from '../hooks/useScripts';
-import {
-  useResources,
-  useUploadResource,
-  useSaveResource,
-  useDeleteResource,
-  useCreateFolder,
-  useDeleteFolder,
-  useMoveResource,
-  downloadResource,
-} from '../hooks/useResources';
+import { useSaveResource } from '../hooks/useResources';
 import { useExecutionStore } from '../stores/executionStore';
 import { api } from '../lib/api';
 import type { Script, TestCase } from '../types';
@@ -199,264 +197,89 @@ const BTN_CANCEL: React.CSSProperties = {
   fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--font-ui)',
 };
 
-// ── ImportScriptModal ────────────────────────────────────────────────────────
+// ── ImportScriptModal ─────────────────────────────────────────────────────────
 
-type ImportMode = 'link' | 'standalone';
+type ImportMode   = 'link' | 'standalone';
+type UploadType   = 'file' | 'folder';
 
 interface ImportScriptModalProps {
   projectId: string;
-  testCases: TestCase[];
+  testCases: TestCase[];        // ALL test cases (not pre-filtered)
+  scriptedTcIds: Set<string>;  // TCs that already have a script
   preSelectedTcId?: string;
+  initialUploadType?: UploadType;
   onClose: () => void;
+  onDone?: () => void;
 }
 
-function ImportScriptModal({ projectId, testCases, preSelectedTcId, onClose }: ImportScriptModalProps) {
-  const [importMode, setImportMode] = useState<ImportMode>(preSelectedTcId ? 'link' : 'standalone');
+function ImportScriptModal({
+  projectId, testCases, scriptedTcIds,
+  preSelectedTcId, initialUploadType = 'file',
+  onClose, onDone,
+}: ImportScriptModalProps) {
+  const [importMode, setImportMode]   = useState<ImportMode>(preSelectedTcId ? 'link' : 'standalone');
+  const [uploadType, setUploadType]   = useState<UploadType>(initialUploadType);
+
+  // ── File upload state ──────────────────────────────────────────────────────
+  const [file, setFile]               = useState<File | null>(null);
   const [selectedTcId, setSelectedTcId] = useState(preSelectedTcId ?? '');
-  const [file, setFile] = useState<File | null>(null);
-  const [search, setSearch] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [conversionNote, setConversionNote] = useState<{ converted: boolean; filename: string } | null>(null);
+  const [search, setSearch]           = useState('');
+  const [busy, setBusy]               = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const upload = useUploadScript(projectId);
+  const upload  = useUploadScript(projectId);
+
+  // ── Folder import state ────────────────────────────────────────────────────
+  const [folderFile, setFolderFile]   = useState<File | null>(null);
+  const [folderBusy, setFolderBusy]   = useState(false);
+  const [folderResult, setFolderResult] = useState<{
+    imported: { filename: string; testCasesCreated: number }[];
+    warnings: string[];
+    warnings: string[];
+  } | null>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
 
   const filteredTCs = useMemo(() => {
     const q = search.toLowerCase();
     return testCases
       .filter((tc) => tc.title.toLowerCase().includes(q) || tc.tcId.toLowerCase().includes(q))
-      .slice(0, 40);
+      .slice(0, 60);
   }, [testCases, search]);
 
-  async function handleImport() {
-    if (!file) {
-      toast.error('Select a script file first');
-      return;
-    }
+  async function handleFileImport() {
+    if (!file) { toast.error('Select a .robot file first'); return; }
     setBusy(true);
     try {
-      const tcId = importMode === 'link' ? (selectedTcId || undefined) : undefined;
-      const result = await upload.mutateAsync({ file, testCaseId: tcId });
-      if (result.converted) {
-        setConversionNote({ converted: true, filename: result.filename });
-      } else {
+      if (importMode === 'link') {
+        // Link to existing TC (replace script if TC already has one)
+        const tcId = selectedTcId || undefined;
+        await upload.mutateAsync({ file, testCaseId: tcId });
         const linked = tcId ? testCases.find((tc) => tc.id === tcId) : null;
-        toast.success(linked ? `Imported and linked to ${linked.tcId}` : `Imported ${file.name}`);
-        onClose();
+        if (linked) {
+          const wasScripted = scriptedTcIds.has(linked.id);
+          toast.success(`${wasScripted ? 'Replaced script for' : 'Linked to'} ${linked.tcId}`);
+        } else {
+          toast.success(`Imported ${file.name} (unlinked)`);
+        }
+      } else {
+        // Standalone — auto-create TCs from *** Test Cases *** section
+        const result = await upload.mutateAsync({ file, autoCreateTCs: true });
+        const tcCreated = (result as { tcCreated?: number }).tcCreated ?? 0;
+        toast.success(`Imported ${file.name}${tcCreated > 0 ? ` · ${tcCreated} TC${tcCreated > 1 ? 's' : ''} created` : ''}`);
       }
+      onDone?.();
+      onClose();
     } catch {
       toast.error('Import failed');
     }
     setBusy(false);
   }
 
-  const INPUT_STYLE_SM: React.CSSProperties = {
-    width: '100%', padding: '7px 10px', background: 'var(--surface2)',
-    border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)',
-    fontSize: 11, outline: 'none', boxSizing: 'border-box', fontFamily: 'var(--font-ui)',
-  };
-
-  const MODE_OPTS: { value: ImportMode; label: string; desc: string }[] = [
-    { value: 'link',       label: 'Link to existing TC',   desc: 'Choose a TC from your library to associate this script with.' },
-    { value: 'standalone', label: 'Import standalone',     desc: 'No TC — custom script only.' },
-  ];
-
-  return (
-    <div style={MODAL_OVERLAY} onClick={onClose}>
-      <div style={MODAL_BOX} onClick={(e) => e.stopPropagation()}>
-        <div style={MODAL_HEADER}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>⬆ Import Script</span>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', fontSize: 16, cursor: 'pointer', lineHeight: 1 }}>×</button>
-        </div>
-
-        <div style={MODAL_BODY}>
-          {/* Conversion result banner */}
-          {conversionNote && (
-            <div style={{
-              padding: '10px 12px', borderRadius: 6,
-              background: 'rgba(42,157,143,0.1)',
-              border: '1px solid rgba(42,157,143,0.4)',
-              fontSize: 11, lineHeight: 1.6,
-            }}>
-              <div style={{ fontWeight: 700, color: 'var(--emerald)', marginBottom: 4 }}>
-                ✅ Converted: SeleniumLibrary → Browser library
-              </div>
-              <div style={{ color: 'var(--text-mid)' }}>
-                Saved as <code style={{ fontFamily: 'var(--font-mono)' }}>{conversionNote.filename}</code> using RF Browser library (Playwright backend).
-              </div>
-              <button
-                onClick={onClose}
-                style={{ marginTop: 8, padding: '4px 12px', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 700, background: 'var(--surface3)', color: 'var(--text-mid)', fontFamily: 'var(--font-ui)' }}
-              >
-                Done
-              </button>
-            </div>
-          )}
-
-          {!conversionNote && <>
-            {/* Mode selector */}
-            <div>
-              <span style={LABEL_STYLE}>Import Mode</span>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {MODE_OPTS.map((opt) => (
-                  <button
-                    key={opt.value}
-                    onClick={() => setImportMode(opt.value)}
-                    style={{
-                      flex: 1, padding: '7px 6px', borderRadius: 6, cursor: 'pointer',
-                      fontSize: 10, fontWeight: 700, fontFamily: 'var(--font-ui)',
-                      border: importMode === opt.value ? '1px solid rgba(139,92,246,0.6)' : '1px solid var(--border)',
-                      background: importMode === opt.value ? 'rgba(139,92,246,0.12)' : 'transparent',
-                      color: importMode === opt.value ? 'var(--violet)' : 'var(--text-dim)',
-                      transition: 'all 0.15s', textAlign: 'center',
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-              <p style={{ fontSize: 10, color: 'var(--text-dim)', margin: '5px 0 0', lineHeight: 1.5 }}>
-                {MODE_OPTS.find(o => o.value === importMode)?.desc}
-              </p>
-            </div>
-
-            {/* File picker */}
-            <div>
-              <span style={LABEL_STYLE}>
-                Script File <span style={{ color: '#f87171', fontWeight: 400 }}>*</span>
-                {file?.name.toLowerCase().endsWith('.robot') && (
-                  <span style={{ marginLeft: 6, color: 'var(--emerald)', fontWeight: 400 }}>
-                    🤖 Robot Framework — SeleniumLibrary will be auto-converted if detected
-                  </span>
-                )}
-              </span>
-              <button
-                onClick={() => fileRef.current?.click()}
-                style={{
-                  width: '100%', padding: '18px 12px',
-                  border: `2px dashed ${file ? 'var(--emerald)' : 'var(--border)'}`,
-                  borderRadius: 8, background: file ? 'rgba(42,157,143,0.06)' : 'transparent',
-                  cursor: 'pointer', color: file ? 'var(--text)' : 'var(--text-dim)',
-                  fontSize: 12, fontFamily: 'var(--font-ui)', textAlign: 'center',
-                  transition: 'all 0.15s',
-                }}
-              >
-                {file ? `📄 ${file.name}` : '+ Click to select a .robot file'}
-              </button>
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".robot"
-                style={{ display: 'none' }}
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              />
-            </div>
-
-            {/* TC selector — only shown in 'link' mode */}
-            {importMode === 'link' && (
-              <div>
-                <span style={LABEL_STYLE}>Link to Test Case <span style={{ fontWeight: 400, color: 'var(--text-dim)' }}>(optional)</span></span>
-                <input
-                  type="text"
-                  placeholder="Search by title or TC ID…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  style={INPUT_STYLE_SM}
-                />
-                <div style={{
-                  maxHeight: 160, overflowY: 'auto', marginTop: 4,
-                  border: '1px solid var(--border)', borderRadius: 6,
-                  background: 'var(--surface2)',
-                }}>
-                  <div
-                    onClick={() => setSelectedTcId('')}
-                    style={{
-                      padding: '7px 10px', cursor: 'pointer', fontSize: 11,
-                      background: !selectedTcId ? 'rgba(37,99,171,0.18)' : 'transparent',
-                      color: !selectedTcId ? 'var(--cyan)' : 'var(--text-dim)',
-                      borderBottom: '1px solid var(--border)',
-                    }}
-                  >
-                    None — upload as unlinked custom script
-                  </div>
-                  {filteredTCs.map((tc) => (
-                    <div
-                      key={tc.id}
-                      onClick={() => setSelectedTcId(tc.id)}
-                      style={{
-                        padding: '7px 10px', cursor: 'pointer', fontSize: 11,
-                        background: selectedTcId === tc.id ? 'rgba(37,99,171,0.18)' : 'transparent',
-                        color: selectedTcId === tc.id ? 'var(--cyan)' : 'var(--text-mid)',
-                        display: 'flex', gap: 8, alignItems: 'baseline',
-                      }}
-                    >
-                      <span style={{ color: 'var(--text-dim)', flexShrink: 0 }}>{tc.tcId}</span>
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tc.title}</span>
-                    </div>
-                  ))}
-                  {filteredTCs.length === 0 && search && (
-                    <div style={{ padding: '8px 10px', color: 'var(--text-dim)', fontSize: 11 }}>No matches</div>
-                  )}
-                </div>
-                {selectedTcId && (
-                  <p style={{ fontSize: 10, color: 'var(--text-dim)', margin: '5px 0 0', lineHeight: 1.5 }}>
-                    Any existing script for this test case will be replaced.
-                  </p>
-                )}
-              </div>
-            )}
-          </>}
-        </div>
-
-        {!conversionNote && (
-          <div style={MODAL_FOOTER}>
-            <button onClick={onClose} style={BTN_CANCEL}>Cancel</button>
-            <button
-              onClick={handleImport}
-              disabled={!file || busy}
-              style={{
-                padding: '7px 18px', borderRadius: 6, border: 'none',
-                cursor: !file || busy ? 'not-allowed' : 'pointer',
-                fontSize: 12, fontWeight: 700, fontFamily: 'var(--font-ui)', color: '#fff',
-                background: 'linear-gradient(135deg, var(--violet), var(--cyan))',
-                opacity: !file || busy ? 0.55 : 1,
-                transition: 'opacity 0.15s',
-              }}
-            >
-              {busy ? (file?.name.toLowerCase().endsWith('.robot') ? 'Converting…' : 'Importing…') : '⬆ Import'}
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── ImportFolderModal ─────────────────────────────────────────────────────────
-
-interface ImportFolderResult {
-  filesImported: number;
-  tcsCreated: number;
-  warnings: string[];
-}
-
-interface ImportFolderModalProps {
-  projectId: string;
-  onClose: () => void;
-  onDone: () => void;
-}
-
-function ImportFolderModal({ projectId, onClose, onDone }: ImportFolderModalProps) {
-  const [file, setFile] = useState<File | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<ImportFolderResult | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  async function handleImport() {
-    if (!file) { toast.error('Select a zip file first'); return; }
-    setBusy(true);
+  async function handleFolderImport() {
+    if (!folderFile) { toast.error('Select a .zip file first'); return; }
+    setFolderBusy(true);
     try {
       const fd = new FormData();
-      fd.append('folder', file);
+      fd.append('folder', folderFile);
       const token = localStorage.getItem('qai-token') ?? '';
       const res = await fetch(`/api/projects/${projectId}/scripts/import-folder`, {
         method: 'POST',
@@ -465,120 +288,227 @@ function ImportFolderModal({ projectId, onClose, onDone }: ImportFolderModalProp
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(err.error ?? 'Import failed');
+        throw new Error((err as { error?: string }).error ?? 'Import failed');
       }
-      const data: ImportFolderResult = await res.json();
-      setResult(data);
+      const data = await res.json() as {
+        imported: { filename: string; testCasesCreated: number }[];
+        warnings: string[];
+        warnings: string[];
+      };
+      setFolderResult(data);
+      onDone?.();
     } catch (err) {
       toast.error((err as Error)?.message ?? 'Import failed');
     }
-    setBusy(false);
+    setFolderBusy(false);
   }
 
-  if (result) {
-    return (
-      <div style={MODAL_OVERLAY} onClick={onClose}>
-        <div style={MODAL_BOX} onClick={(e) => e.stopPropagation()}>
-          <div style={MODAL_HEADER}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📦 Folder Import Complete</span>
-            <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', fontSize: 16, cursor: 'pointer', lineHeight: 1 }}>×</button>
+  const SEG_BTN = (active: boolean, accent = 'var(--violet)'): React.CSSProperties => ({
+    flex: 1, padding: '8px 10px', borderRadius: 6, cursor: 'pointer',
+    fontSize: 11, fontWeight: 700, fontFamily: 'var(--font-ui)',
+    border: active ? `1.5px solid ${accent}` : '1.5px solid var(--border)',
+    background: active ? accent : 'var(--surface)',
+    color: active ? '#fff' : 'var(--text-dim)',
+    boxShadow: active ? `0 0 8px ${accent}55` : 'none',
+    transition: 'all 0.15s', textAlign: 'center' as const,
+  });
+
+  const INPUT_STYLE_SM: React.CSSProperties = {
+    width: '100%', padding: '7px 10px', background: 'var(--surface2)',
+    border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)',
+    fontSize: 11, outline: 'none', boxSizing: 'border-box', fontFamily: 'var(--font-ui)',
+  };
+
+  const modeDesc = importMode === 'link'
+    ? 'Choose a TC to link this script to. If the TC already has a script it will be replaced.'
+    : 'TCs will be auto-created from the *** Test Cases *** section in the uploaded script.';
+
+  return (
+    <div style={MODAL_OVERLAY} onClick={onClose}>
+      <div style={{ ...MODAL_BOX, maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+        <div style={MODAL_HEADER}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>⬆ Import Script</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', fontSize: 16, cursor: 'pointer', lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={MODAL_BODY}>
+
+          {/* ── Upload type ─────────────────────────────────────────────── */}
+          <div>
+            <span style={LABEL_STYLE}>Upload Type</span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button style={SEG_BTN(uploadType === 'file', 'var(--cyan)')}
+                onClick={() => setUploadType('file')}>📄 Single .robot file</button>
+              <button style={SEG_BTN(uploadType === 'folder', 'var(--cyan)')}
+                onClick={() => setUploadType('folder')}>📦 Use Case Folder (.zip)</button>
+            </div>
           </div>
-          <div style={MODAL_BODY}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div style={{ display: 'flex', gap: 12 }}>
-                <div style={{
-                  flex: 1, padding: '12px', borderRadius: 8, textAlign: 'center',
-                  background: 'rgba(42,157,143,0.1)', border: '1px solid rgba(42,157,143,0.3)',
-                }}>
-                  <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--emerald)' }}>{result.filesImported}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4 }}>Scripts imported</div>
-                </div>
-                <div style={{
-                  flex: 1, padding: '12px', borderRadius: 8, textAlign: 'center',
-                  background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.3)',
-                }}>
-                  <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--violet)' }}>{result.tcsCreated}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4 }}>TCs linked/created</div>
-                </div>
+
+          {/* ── Mode — only for single file ─────────────────────────────── */}
+          {uploadType === 'file' && (
+            <div>
+              <span style={LABEL_STYLE}>Import Mode</span>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button style={SEG_BTN(importMode === 'link', 'var(--violet)')}
+                  onClick={() => setImportMode('link')}>Link to existing TC</button>
+                <button style={SEG_BTN(importMode === 'standalone', 'var(--violet)')}
+                  onClick={() => setImportMode('standalone')}>Import standalone</button>
               </div>
-              {result.warnings.length > 0 && (
+              <p style={{ fontSize: 10, color: 'var(--text-dim)', margin: '5px 0 0', lineHeight: 1.5 }}>{modeDesc}</p>
+            </div>
+          )}
+
+          {/* ── File picker (single file) ────────────────────────────────── */}
+          {uploadType === 'file' && (
+            <div>
+              <span style={LABEL_STYLE}>Script File <span style={{ color: '#f87171', fontWeight: 400 }}>*</span></span>
+              <button onClick={() => fileRef.current?.click()} style={{
+                width: '100%', padding: '18px 12px',
+                border: `2px dashed ${file ? 'var(--emerald)' : 'var(--border)'}`,
+                borderRadius: 8, background: file ? 'rgba(42,157,143,0.06)' : 'transparent',
+                cursor: 'pointer', color: file ? 'var(--text)' : 'var(--text-dim)',
+                fontSize: 12, fontFamily: 'var(--font-ui)', textAlign: 'center', transition: 'all 0.15s',
+              }}>
+                {file ? `📄 ${file.name}` : '+ Click to select a .robot file'}
+              </button>
+              <input ref={fileRef} type="file" accept=".robot" style={{ display: 'none' }}
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+            </div>
+          )}
+
+          {/* ── TC selector — link mode only ─────────────────────────────── */}
+          {uploadType === 'file' && importMode === 'link' && (
+            <div>
+              <span style={LABEL_STYLE}>Test Case <span style={{ fontWeight: 400, color: 'var(--text-dim)' }}>(optional)</span></span>
+              <input type="text" placeholder="Search by title or TC ID…" value={search}
+                onChange={(e) => setSearch(e.target.value)} style={INPUT_STYLE_SM} />
+              <div style={{ maxHeight: 160, overflowY: 'auto', marginTop: 4, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface2)' }}>
+                <div onClick={() => setSelectedTcId('')} style={{
+                  padding: '7px 10px', cursor: 'pointer', fontSize: 11,
+                  background: !selectedTcId ? 'rgba(37,99,171,0.18)' : 'transparent',
+                  color: !selectedTcId ? 'var(--cyan)' : 'var(--text-dim)',
+                  borderBottom: '1px solid var(--border)',
+                }}>None — upload as unlinked script</div>
+                {filteredTCs.map((tc) => {
+                  const hasScript = scriptedTcIds.has(tc.id);
+                  const isSelected = selectedTcId === tc.id;
+                  return (
+                    <div key={tc.id} onClick={() => setSelectedTcId(tc.id)} style={{
+                      padding: '7px 10px', cursor: 'pointer', fontSize: 11,
+                      background: isSelected ? 'rgba(37,99,171,0.18)' : 'transparent',
+                      color: isSelected ? 'var(--cyan)' : 'var(--text-mid)',
+                      display: 'flex', gap: 8, alignItems: 'center',
+                      borderBottom: '1px solid var(--border)',
+                    }}>
+                      <span style={{ color: 'var(--text-dim)', flexShrink: 0, fontSize: 10 }}>{tc.tcId}</span>
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tc.title}</span>
+                      {hasScript && (
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4,
+                          background: 'rgba(245,158,11,0.15)', color: 'var(--amber)', flexShrink: 0,
+                        }}>⟳ replace</span>
+                      )}
+                    </div>
+                  );
+                })}
+                {filteredTCs.length === 0 && search && (
+                  <div style={{ padding: '8px 10px', color: 'var(--text-dim)', fontSize: 11 }}>No matches</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── Folder zip picker ────────────────────────────────────────── */}
+          {uploadType === 'folder' && !folderResult && (
+            <div>
+              <span style={LABEL_STYLE}>Use Case Zip <span style={{ color: '#f87171', fontWeight: 400 }}>*</span></span>
+              <p style={{ fontSize: 10, color: 'var(--text-dim)', margin: '0 0 8px', lineHeight: 1.6 }}>
+                Upload a <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--cyan)' }}>.zip</code> of one use case.{' '}
+                <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--emerald)' }}>.robot</code> files become scripts with auto-created TCs.
+                All other files (xlsx, csv, png, .resource, .py…) are preserved under <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-mid)' }}>resources/</code> with their folder structure intact.
+              </p>
+              <button onClick={() => folderRef.current?.click()} style={{
+                width: '100%', padding: '22px 12px',
+                border: `2px dashed ${folderFile ? 'var(--cyan)' : 'var(--border)'}`,
+                borderRadius: 8, background: folderFile ? 'rgba(34,211,238,0.05)' : 'transparent',
+                cursor: 'pointer', color: folderFile ? 'var(--text)' : 'var(--text-dim)',
+                fontSize: 12, fontFamily: 'var(--font-ui)', textAlign: 'center', transition: 'all 0.15s',
+              }}>
+                {folderFile
+                  ? `📦 ${folderFile.name} (${(folderFile.size / 1024).toFixed(1)} KB)`
+                  : '+ Click to select a .zip file'}
+              </button>
+              <input ref={folderRef} type="file" accept=".zip" style={{ display: 'none' }}
+                onChange={(e) => setFolderFile(e.target.files?.[0] ?? null)} />
+            </div>
+          )}
+
+          {/* ── Folder result summary ────────────────────────────────────── */}
+          {uploadType === 'folder' && folderResult && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', gap: 10 }}>
+                {[
+                  { label: 'Scripts imported', value: folderResult.imported.length,
+                    color: 'var(--emerald)', bg: 'rgba(42,157,143,0.1)', border: 'rgba(42,157,143,0.3)' },
+                  { label: 'TCs created',
+                    value: folderResult.imported.reduce((s, r) => s + r.testCasesCreated, 0),
+                    color: 'var(--violet)', bg: 'rgba(139,92,246,0.1)', border: 'rgba(139,92,246,0.3)' },
+                  { label: 'Warnings', value: folderResult.warnings?.length ?? 0,
+                    color: 'var(--cyan)', bg: 'rgba(34,211,238,0.1)', border: 'rgba(34,211,238,0.3)' },
+                ].map((tile) => (
+                  <div key={tile.label} style={{
+                    flex: 1, padding: '12px', borderRadius: 8, textAlign: 'center',
+                    background: tile.bg, border: `1px solid ${tile.border}`,
+                  }}>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: tile.color }}>{tile.value}</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>{tile.label}</div>
+                  </div>
+                ))}
+              </div>
+              {folderResult.warnings.length > 0 && (
                 <div style={{ padding: '10px 12px', borderRadius: 6, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber)', marginBottom: 6 }}>⚠ Warnings</div>
-                  {result.warnings.map((w, i) => (
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber)', marginBottom: 4 }}>⚠ Warnings</div>
+                  {folderResult.warnings.map((w, i) => (
                     <div key={i} style={{ fontSize: 10, color: 'var(--text-mid)', lineHeight: 1.6, fontFamily: 'var(--font-mono)' }}>{w}</div>
                   ))}
                 </div>
               )}
             </div>
-          </div>
-          <div style={MODAL_FOOTER}>
-            <button
-              onClick={() => { onDone(); onClose(); }}
-              style={{
-                padding: '7px 18px', borderRadius: 6, border: 'none', cursor: 'pointer',
-                fontSize: 12, fontWeight: 700, fontFamily: 'var(--font-ui)', color: '#fff',
-                background: 'linear-gradient(135deg, var(--emerald), var(--cyan))',
-              }}
-            >
-              ✓ Done
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+          )}
 
-  return (
-    <div style={MODAL_OVERLAY} onClick={onClose}>
-      <div style={MODAL_BOX} onClick={(e) => e.stopPropagation()}>
-        <div style={MODAL_HEADER}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>📦 Import Folder</span>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', fontSize: 16, cursor: 'pointer', lineHeight: 1 }}>×</button>
-        </div>
-        <div style={MODAL_BODY}>
-          <div>
-            <span style={LABEL_STYLE}>Zip File <span style={{ color: '#f87171', fontWeight: 400 }}>*</span></span>
-            <p style={{ fontSize: 10, color: 'var(--text-dim)', margin: '0 0 8px', lineHeight: 1.6 }}>
-              Upload a <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--cyan)' }}>.zip</code> archive containing <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--emerald)' }}>.robot</code> files. Each file will be imported as a script and linked to a matching test case where possible.
-            </p>
-            <button
-              onClick={() => fileRef.current?.click()}
-              style={{
-                width: '100%', padding: '22px 12px',
-                border: `2px dashed ${file ? 'var(--cyan)' : 'var(--border)'}`,
-                borderRadius: 8, background: file ? 'rgba(34,211,238,0.05)' : 'transparent',
-                cursor: 'pointer', color: file ? 'var(--text)' : 'var(--text-dim)',
-                fontSize: 12, fontFamily: 'var(--font-ui)', textAlign: 'center',
-                transition: 'all 0.15s',
-              }}
-            >
-              {file ? `📦 ${file.name} (${(file.size / 1024).toFixed(1)} KB)` : '+ Click to select a .zip file'}
-            </button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".zip"
-              style={{ display: 'none' }}
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            />
-          </div>
-        </div>
+        </div>{/* /MODAL_BODY */}
+
+        {/* ── Footer ──────────────────────────────────────────────────────── */}
         <div style={MODAL_FOOTER}>
-          <button onClick={onClose} style={BTN_CANCEL}>Cancel</button>
-          <button
-            onClick={handleImport}
-            disabled={!file || busy}
-            style={{
-              padding: '7px 18px', borderRadius: 6, border: 'none',
-              cursor: !file || busy ? 'not-allowed' : 'pointer',
+          {uploadType === 'folder' && folderResult ? (
+            <button onClick={onClose} style={{
+              padding: '7px 18px', borderRadius: 6, border: 'none', cursor: 'pointer',
               fontSize: 12, fontWeight: 700, fontFamily: 'var(--font-ui)', color: '#fff',
-              background: 'linear-gradient(135deg, var(--violet), var(--cyan))',
-              opacity: !file || busy ? 0.55 : 1,
-              transition: 'opacity 0.15s',
-            }}
-          >
-            {busy ? 'Importing…' : '📦 Import Folder'}
-          </button>
+              background: 'linear-gradient(135deg, var(--emerald), var(--cyan))',
+            }}>✓ Done</button>
+          ) : uploadType === 'folder' ? (
+            <>
+              <button onClick={onClose} style={BTN_CANCEL}>Cancel</button>
+              <button onClick={handleFolderImport} disabled={!folderFile || folderBusy} style={{
+                padding: '7px 18px', borderRadius: 6, border: 'none',
+                cursor: !folderFile || folderBusy ? 'not-allowed' : 'pointer',
+                fontSize: 12, fontWeight: 700, fontFamily: 'var(--font-ui)', color: '#fff',
+                background: 'linear-gradient(135deg, var(--6d-orange), var(--cyan))',
+                opacity: !folderFile || folderBusy ? 0.55 : 1, transition: 'opacity 0.15s',
+              }}>{folderBusy ? 'Importing…' : '📦 Import Use Case'}</button>
+            </>
+          ) : (
+            <>
+              <button onClick={onClose} style={BTN_CANCEL}>Cancel</button>
+              <button onClick={handleFileImport} disabled={!file || busy} style={{
+                padding: '7px 18px', borderRadius: 6, border: 'none',
+                cursor: !file || busy ? 'not-allowed' : 'pointer',
+                fontSize: 12, fontWeight: 700, fontFamily: 'var(--font-ui)', color: '#fff',
+                background: 'linear-gradient(135deg, var(--violet), var(--cyan))',
+                opacity: !file || busy ? 0.55 : 1, transition: 'opacity 0.15s',
+              }}>{busy ? 'Importing…' : '⬆ Import'}</button>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -631,35 +561,27 @@ export default function Scripts() {
   const createIndividualRun = useCreateIndividualRun(projectId ?? '');
   const { data: envConfigs = [] } = useProjectEnvConfigs(projectId);
 
-  // ── Resources state ────────────────────────────────────────────────────────
-  const { data: resources = [], isLoading: resourcesLoading } = useResources(projectId);
-  const uploadResource = useUploadResource(projectId ?? '');
+  // ── Project file tree ────────────────────────────────────────────────────
+  const { data: fileTreeData, isLoading: fileTreeLoading, refetch: refetchFileTree } = useProjectFileTree(projectId);
+  const deleteProjectFile   = useDeleteProjectFile(projectId ?? '');
+  const moveProjectFile     = useMoveProjectFile(projectId ?? '');
+  const uploadProjectFile   = useUploadProjectFile(projectId ?? '');
+  const createProjectFolder = useCreateProjectFolder(projectId ?? '');
+  const [expandedTreeDirs, setExpandedTreeDirs]     = useState<Set<string>>(new Set(['TestCases', 'Resource', 'resources']));
+  const [selectedFilePath, setSelectedFilePath]     = useState<string | null>(null);
+  const [showSearch, setShowSearch]                 = useState(false);
+  const [searchQuery, setSearchQuery]               = useState('');
+  const [searchResults, setSearchResults]           = useState<{ path: string; matches: { line: number; text: string }[] }[]>([]);
+  const [searchLoading, setSearchLoading]           = useState(false);
+  const [deletingFilePath, setDeletingFilePath]     = useState<string | null>(null);
+  const [draggedFilePath, setDraggedFilePath]       = useState<string | null>(null);
+  const [dragOverDirPath, setDragOverDirPath]       = useState<string | null>(null);
+  const [uploadTargetDir, setUploadTargetDir]       = useState<string>('');
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
+  const [newFolderName, setNewFolderName]           = useState('');
+  const projectFileUploadRef = useRef<HTMLInputElement>(null);
   const saveResource = useSaveResource(projectId ?? '');
-  const deleteResource = useDeleteResource(projectId ?? '');
-  const deleteFolder = useDeleteFolder(projectId ?? '');
-  const moveResource = useMoveResource(projectId ?? '');
-  const resourceFileRef = useRef<HTMLInputElement>(null);
-  const createFolder = useCreateFolder(projectId ?? '');
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const [uploadFolder, setUploadFolder] = useState<string>('');
-  const [showNewFolder, setShowNewFolder] = useState(false);
-  const [deletingResourceFile, setDeletingResourceFile] = useState<string | null>(null);
-  const [deletingFolder, setDeletingFolder] = useState<string | null>(null);
-  const [movingResource, setMovingResource] = useState<string | null>(null);
-  const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
-  const [newFolderInput, setNewFolderInput] = useState('');
-  const [selectedResourcePath, setSelectedResourcePath] = useState<string>('');
-  const [pathCopied, setPathCopied] = useState(false);
 
-  // Base container path shared by all resources
-  const resourcesBase = useMemo(() => {
-    for (const r of resources) {
-      if (r.containerPath && r.filename) {
-        return r.containerPath.slice(0, r.containerPath.length - r.filename.length - 1);
-      }
-    }
-    return null;
-  }, [resources]);
   const { setSelected: setExecutionSelected } = useExecutionStore();
 
   // ── Derived data ─────────────────────────────────────────────────────────
@@ -681,7 +603,7 @@ export default function Scripts() {
 
   // ── Left panel state ─────────────────────────────────────────────────────
 
-  const [leftTab, setLeftTab] = useState<'tcs' | 'scripts' | 'resources'>('tcs');
+  const [leftTab, setLeftTab] = useState<'tcs' | 'projectfiles'>('tcs');
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
     new Set(AIRTEL_USE_CASES),
   );
@@ -753,10 +675,6 @@ export default function Scripts() {
   async function handleQuickRun() {
     if (!projectId || !activeScript?.testCaseId) return;
     const defaultEnv = envConfigs.find((e) => e.isDefault) ?? envConfigs[0];
-    if (!defaultEnv) {
-      toast.error('No environment configured — add one in Project Settings first.');
-      return;
-    }
     if (activeTabId && dirtyTabs.has(activeTabId)) {
       try {
         await save.mutateAsync({ scriptId: activeTabId, content: tabContents[activeTabId] ?? '' });
@@ -771,7 +689,7 @@ export default function Scripts() {
     try {
       const run = await createIndividualRun.mutateAsync({
         testCaseId: activeScript.testCaseId,
-        environment: defaultEnv.name,
+        environment: defaultEnv?.name ?? 'default',
       });
       setQuickRunId(run.id);
       setMonitorRunId(run.id);
@@ -786,10 +704,6 @@ export default function Scripts() {
   async function handleHostBrowserRun() {
     if (!projectId || !activeScript?.testCaseId) return;
     const defaultEnv = envConfigs.find((e) => e.isDefault) ?? envConfigs[0];
-    if (!defaultEnv) {
-      toast.error('No environment configured — add one in Project Settings first.');
-      return;
-    }
     if (activeTabId && dirtyTabs.has(activeTabId)) {
       try {
         await save.mutateAsync({ scriptId: activeTabId, content: tabContents[activeTabId] ?? '' });
@@ -806,7 +720,7 @@ export default function Scripts() {
     try {
       const run = await createIndividualRun.mutateAsync({
         testCaseId: activeScript.testCaseId,
-        environment: defaultEnv.name,
+        environment: defaultEnv?.name ?? 'default',
         hostBrowser: true,
       });
       setHostRunId(run.id);
@@ -835,10 +749,11 @@ export default function Scripts() {
 
   const [showImportModal, setShowImportModal] = useState(false);
   const [importPreTcId, setImportPreTcId] = useState('');
-  const [showImportFolderModal, setShowImportFolderModal] = useState(false);
+  const [importInitialUploadType, setImportInitialUploadType] = useState<'file' | 'folder'>('file');
 
-  function handleOpenImport(tcId = '') {
+  function handleOpenImport(tcId = '', uploadType: 'file' | 'folder' = 'file') {
     setImportPreTcId(tcId);
+    setImportInitialUploadType(uploadType);
     setShowImportModal(true);
   }
 
@@ -905,12 +820,67 @@ export default function Scripts() {
       if (!tabContents[tabId] && projectId) {
         setLoadingContent(true);
         try {
+          // Files now live in the project tree (/scripts/slug/), not the legacy resources dir
           const res = await api.get<{ content: string }>(
-            `/projects/${projectId}/resources/${filename}/content`,
+            `/projects/${projectId}/scripts/project-file/content?path=${encodeURIComponent(filename)}`,
           );
           setTabContents((prev) => ({ ...prev, [tabId]: res.data.content }));
         } catch {
           toast.error('Failed to load resource content');
+        } finally {
+          setLoadingContent(false);
+        }
+      }
+    },
+    [openTabs, tabContents, projectId],
+  );
+
+  // ── Global project file search ──────────────────────────────────────────
+
+  useEffect(() => {
+    if (!searchQuery || searchQuery.length < 2 || !projectId) {
+      setSearchResults([]);
+      return;
+    }
+    setSearchLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.get<{ results: { path: string; matches: { line: number; text: string }[] }[] }>(
+          `/projects/${projectId}/scripts/project-file/search?q=${encodeURIComponent(searchQuery)}`,
+        );
+        setSearchResults(res.data.results);
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery, projectId]);
+
+  // ── Open a project-file tab (any file under /scripts/slug/) ─────────────
+
+  const EDITABLE_EXTS = new Set(['.robot', '.resource', '.yaml', '.yml', '.txt', '.py', '.json', '.csv', '.ini', '.cfg', '.toml', '.md']);
+
+  const openProjectFileTab = useCallback(
+    async (filePath: string) => {
+      const ext = filePath.includes('.') ? '.' + filePath.split('.').pop()!.toLowerCase() : '';
+      if (!EDITABLE_EXTS.has(ext)) { toast.error(`Cannot edit ${ext || 'this'} file type in the editor`); return; }
+      const tabId = `pf:${filePath}`;
+      const tab: EditorTab = { kind: 'projectfile', id: tabId, filename: filePath.split('/').pop() ?? filePath, path: filePath };
+      setActiveTabId(tabId);
+      if (!openTabs.find((t) => t.id === tabId)) {
+        setOpenTabs((prev) => [...prev, tab]);
+      }
+      if (!tabContents[tabId] && projectId) {
+        setLoadingContent(true);
+        try {
+          const res = await api.get<{ content: string }>(
+            `/projects/${projectId}/scripts/project-file/content?path=${encodeURIComponent(filePath)}`,
+          );
+          setTabContents((prev) => ({ ...prev, [tabId]: res.data.content }));
+        } catch {
+          toast.error('Failed to load file');
         } finally {
           setLoadingContent(false);
         }
@@ -943,6 +913,8 @@ export default function Scripts() {
     try {
       if (tab.kind === 'resource') {
         await saveResource.mutateAsync({ filename: tab.filename, content: tabContents[activeTabId] ?? '' });
+      } else if (tab.kind === 'projectfile') {
+        await api.put(`/projects/${projectId}/scripts/project-file/content?path=${encodeURIComponent(tab.path)}`, { content: tabContents[activeTabId] ?? '' });
       } else {
         await save.mutateAsync({ scriptId: activeTabId, content: tabContents[activeTabId] ?? '' });
       }
@@ -1045,22 +1017,21 @@ export default function Scripts() {
         />
       )}
 
-      {/* Import script modal */}
+      {/* Import script modal (single file + use case folder tabs) */}
       {showImportModal && projectId && (
         <ImportScriptModal
           projectId={projectId}
-          testCases={allTCs.filter((tc) => !scriptedTcIds.has(tc.id))}
+          testCases={allTCs}
+          scriptedTcIds={scriptedTcIds}
           preSelectedTcId={importPreTcId}
+          initialUploadType={importInitialUploadType}
           onClose={() => setShowImportModal(false)}
-        />
-      )}
-
-      {/* Import folder modal */}
-      {showImportFolderModal && projectId && (
-        <ImportFolderModal
-          projectId={projectId}
-          onClose={() => setShowImportFolderModal(false)}
-          onDone={() => void qc.invalidateQueries({ queryKey: ['scripts', projectId] })}
+          onDone={() => {
+            void qc.invalidateQueries({ queryKey: ['scripts', projectId] });
+            void qc.invalidateQueries({ queryKey: ['file-tree', projectId] });
+            void qc.invalidateQueries({ queryKey: ['test-cases', projectId] });
+            setLeftTab('projectfiles');
+          }}
         />
       )}
 
@@ -1077,9 +1048,6 @@ export default function Scripts() {
               <>
                 <TbBtn variant="ghost" onClick={() => handleOpenImport()}>
                   ⬆ Import Script
-                </TbBtn>
-                <TbBtn variant="ghost" onClick={() => setShowImportFolderModal(true)}>
-                  📦 Import Folder
                 </TbBtn>
               </>
             )}
@@ -1107,73 +1075,30 @@ export default function Scripts() {
             display: 'flex', borderBottom: '1px solid var(--border)',
             flexShrink: 0, background: 'var(--surface2)',
           }}>
-            <button
-              onClick={() => setLeftTab('tcs')}
-              style={{
-                flex: 1, padding: '9px 10px', border: 'none', cursor: 'pointer',
-                background: leftTab === 'tcs' ? 'var(--surface)' : 'transparent',
-                borderBottom: leftTab === 'tcs' ? '2px solid var(--6d-orange)' : '2px solid transparent',
-                color: leftTab === 'tcs' ? 'var(--text)' : 'var(--text-dim)',
-                fontSize: 11, fontWeight: 700, fontFamily: 'var(--font-ui)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-                transition: 'all 0.15s',
-              }}
-            >
-              📋 Test Cases
-              {pendingCount > 0 && (
-                <span style={{
-                  fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 10,
-                  background: 'var(--violet)', color: 'white', lineHeight: '14px',
+            {(['tcs', 'projectfiles'] as const).map((tab) => {
+              const active = leftTab === tab;
+              const label = tab === 'tcs' ? '📋 Test Cases' : '📁 Project Files';
+              const accent = tab === 'tcs' ? 'var(--6d-orange)' : 'var(--cyan)';
+              return (
+                <button key={tab} onClick={() => setLeftTab(tab)} style={{
+                  flex: 1, padding: '9px 10px', border: 'none', cursor: 'pointer',
+                  background: active ? 'var(--surface)' : 'transparent',
+                  borderBottom: active ? `2px solid ${accent}` : '2px solid transparent',
+                  color: active ? 'var(--text)' : 'var(--text-dim)',
+                  fontSize: 11, fontWeight: 700, fontFamily: 'var(--font-ui)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+                  transition: 'all 0.15s',
                 }}>
-                  {pendingCount}
-                </span>
-              )}
-            </button>
-            <button
-              onClick={() => setLeftTab('scripts')}
-              style={{
-                flex: 1, padding: '9px 10px', border: 'none', cursor: 'pointer',
-                background: leftTab === 'scripts' ? 'var(--surface)' : 'transparent',
-                borderBottom: leftTab === 'scripts' ? '2px solid var(--cyan)' : '2px solid transparent',
-                color: leftTab === 'scripts' ? 'var(--text)' : 'var(--text-dim)',
-                fontSize: 11, fontWeight: 700, fontFamily: 'var(--font-ui)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-                transition: 'all 0.15s',
-              }}
-            >
-              📄 Scripts
-              {scripts.length > 0 && (
-                <span style={{
-                  fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 10,
-                  background: 'var(--surface3)', color: 'var(--text-dim)', lineHeight: '14px',
-                }}>
-                  {scripts.length}
-                </span>
-              )}
-            </button>
-            <button
-              onClick={() => setLeftTab('resources')}
-              style={{
-                flex: 1, padding: '9px 10px', border: 'none', cursor: 'pointer',
-                background: leftTab === 'resources' ? 'var(--surface)' : 'transparent',
-                borderBottom: leftTab === 'resources' ? '2px solid var(--emerald)' : '2px solid transparent',
-                color: leftTab === 'resources' ? 'var(--text)' : 'var(--text-dim)',
-                fontSize: 11, fontWeight: 700, fontFamily: 'var(--font-ui)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-                transition: 'all 0.15s',
-              }}
-              title="Robot Framework resource files (keywords.robot, variables.robot)"
-            >
-              🗂 Resources
-              {resources.length > 0 && (
-                <span style={{
-                  fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 10,
-                  background: 'rgba(42,157,143,0.18)', color: 'var(--emerald)', lineHeight: '14px',
-                }}>
-                  {resources.filter(r => !r.filename.endsWith('.gitkeep')).length}
-                </span>
-              )}
-            </button>
+                  {label}
+                  {tab === 'tcs' && pendingCount > 0 && (
+                    <span style={{
+                      fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 10,
+                      background: 'var(--violet)', color: 'white', lineHeight: '14px',
+                    }}>{pendingCount}</span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           {/* ── TEST CASES TAB ── */}
@@ -1293,16 +1218,17 @@ export default function Scripts() {
             </>
           )}
 
-          {/* ── SCRIPTS TAB ── */}
-          {leftTab === 'scripts' && (
-            <>
-              {canWrite && (
-                <div style={{
-                  padding: '8px 10px', borderBottom: '1px solid var(--border)',
-                  flexShrink: 0, display: 'flex', gap: 6,
-                }}>
+          {/* ── PROJECT FILES TAB ── */}
+          {leftTab === 'projectfiles' && (
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+              {/* Toolbar */}
+              <div style={{
+                padding: '7px 10px', borderBottom: '1px solid var(--border)',
+                flexShrink: 0, display: 'flex', gap: 6, alignItems: 'center',
+              }}>
+                {canWrite && (
                   <button
-                    onClick={() => handleOpenImport()}
+                    onClick={() => handleOpenImport('', 'folder' as 'folder')}
                     style={{
                       flex: 1, padding: '6px 8px',
                       background: 'linear-gradient(90deg, rgba(42,157,143,0.8), rgba(34,211,238,0.7))',
@@ -1310,506 +1236,325 @@ export default function Scripts() {
                       color: '#fff', fontWeight: 700, fontSize: 11,
                       display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
                     }}
-                  >
-                    ⬆ Import Script
-                  </button>
-                  <button
-                    onClick={() => setShowImportFolderModal(true)}
-                    style={{
-                      padding: '6px 8px', background: 'transparent',
-                      border: '1px solid var(--border)', borderRadius: 5,
-                      cursor: 'pointer', color: 'var(--text-mid)', fontSize: 11,
-                    }}
-                    title="Import a zip folder of .robot files"
-                  >
-                    📦
-                  </button>
-                </div>
-              )}
-
-              {scriptsLoading ? (
-                <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12 }}>Loading…</div>
-              ) : (
-                <FileTree
-                  scripts={scripts}
-                  activeId={activeTabId}
-                  onSelect={openTab}
-                  onDelete={handleDelete}
-                  canDelete={canWrite}
-                />
-              )}
-            </>
-          )}
-
-          {/* ── RESOURCES TAB ── */}
-          {leftTab === 'resources' && (
-            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-              {/* Toolbar: New Folder + Upload */}
-              {canWrite && (
-                <div style={{ flexShrink: 0, borderBottom: '1px solid var(--border)' }}>
-                  {/* Absolute path display */}
-                  {(() => {
-                    const uploadTargetPath = resourcesBase
-                      ? (uploadFolder ? `${resourcesBase}/${uploadFolder}` : resourcesBase)
-                      : uploadFolder || '';
-                    const displayPath = selectedResourcePath || uploadTargetPath || resourcesBase || '';
-                    return (
-                      <div style={{
-                        padding: '6px 10px', borderBottom: '1px solid var(--border)',
-                        background: 'rgba(42,157,143,0.06)',
-                      }}>
-                        <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
-                          {selectedResourcePath ? 'Selected path' : 'Upload target'}
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <span
-                            style={{
-                              flex: 1, fontFamily: 'var(--font-mono)', fontSize: 10,
-                              color: 'var(--emerald)', fontWeight: 600,
-                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            }}
-                            title={displayPath}
-                          >
-                            {displayPath}
-                          </span>
-                          <button
-                            onClick={() => {
-                              if (!displayPath) return;
-                              const finish = () => { setPathCopied(true); setTimeout(() => setPathCopied(false), 1500); };
-                              try {
-                                navigator.clipboard.writeText(displayPath).then(finish).catch(() => {
-                                  const ta = document.createElement('textarea');
-                                  ta.value = displayPath; ta.style.cssText = 'position:fixed;opacity:0';
-                                  document.body.appendChild(ta); ta.select(); document.execCommand('copy');
-                                  document.body.removeChild(ta); finish();
-                                });
-                              } catch {
-                                const ta = document.createElement('textarea');
-                                ta.value = displayPath; ta.style.cssText = 'position:fixed;opacity:0';
-                                document.body.appendChild(ta); ta.select(); document.execCommand('copy');
-                                document.body.removeChild(ta); finish();
-                              }
-                            }}
-                            title="Copy path to clipboard"
-                            style={{
-                              flexShrink: 0, padding: '2px 7px', fontSize: 9, fontWeight: 700,
-                              background: pathCopied ? 'rgba(42,157,143,0.25)' : 'rgba(42,157,143,0.1)',
-                              border: `1px solid rgba(42,157,143,${pathCopied ? '0.5' : '0.25'})`,
-                              borderRadius: 3, cursor: 'pointer',
-                              color: pathCopied ? 'var(--emerald)' : 'var(--text-dim)',
-                              transition: 'all 0.15s',
-                            }}
-                          >
-                            {pathCopied ? '✓ copied' : '⎘ copy'}
-                          </button>
-                          {(uploadFolder || selectedResourcePath) && (
-                            <button
-                              onClick={() => { setUploadFolder(''); setSelectedResourcePath(''); }}
-                              title="Reset to root"
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', fontSize: 11, padding: '1px 3px', flexShrink: 0 }}
-                            >✕</button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  <div style={{ padding: '6px 8px', display: 'flex', gap: 5 }}>
+                  >📦 Import Folder</button>
+                )}
+                {canWrite && (
+                  <>
                     <button
-                      onClick={() => { setShowNewFolder(v => !v); setNewFolderInput(''); }}
-                      title="Create a new folder"
+                      onClick={() => projectFileUploadRef.current?.click()}
+                      title={`Upload file${uploadTargetDir ? ` to ${uploadTargetDir}/` : ' to root'}`}
                       style={{
-                        padding: '5px 7px', fontSize: 10, fontWeight: 700,
-                        background: showNewFolder ? 'rgba(99,102,241,0.18)' : 'rgba(99,102,241,0.08)',
-                        border: '1px solid rgba(99,102,241,0.35)', borderRadius: 4, cursor: 'pointer',
-                        color: '#a5b4fc', whiteSpace: 'nowrap',
+                        padding: '6px 8px', background: 'rgba(99,102,241,0.1)',
+                        border: '1px solid rgba(99,102,241,0.3)', borderRadius: 5,
+                        cursor: 'pointer', color: '#a5b4fc', fontSize: 11, fontWeight: 700,
                       }}
-                    >
-                      📁 New Folder
-                    </button>
-                    <button
-                      onClick={() => resourceFileRef.current?.click()}
-                      style={{
-                        flex: 1, padding: '5px 7px',
-                        background: 'linear-gradient(90deg, rgba(42,157,143,0.8), rgba(34,211,238,0.7))',
-                        border: 'none', borderRadius: 4, cursor: 'pointer',
-                        color: '#fff', fontWeight: 700, fontSize: 10, whiteSpace: 'nowrap',
-                      }}
-                    >
-                      ⬆ Upload
-                    </button>
+                    >⬆ Upload</button>
                     <input
-                      ref={resourceFileRef}
+                      ref={projectFileUploadRef}
                       type="file"
-                      accept=".robot,.py,.yaml,.yml,.txt,.csv,.tsv,.resource,.xlsx,.xls,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp"
                       style={{ display: 'none' }}
                       onChange={async (e) => {
                         const f = e.target.files?.[0];
                         if (!f) return;
                         try {
-                          const result = await uploadResource.mutateAsync({ file: f, folder: uploadFolder });
-                          toast.success(`Uploaded ${result.filename}`);
-                          openResourceTab(result.filename);
-                        } catch {
-                          toast.error('Upload failed');
-                        }
+                          const r = await uploadProjectFile.mutateAsync({ file: f, folder: uploadTargetDir });
+                          toast.success(`Uploaded ${r.filename}`);
+                        } catch { toast.error('Upload failed'); }
                         e.target.value = '';
                       }}
                     />
-                  </div>
-
-                  {/* New Folder inline form */}
-                  {showNewFolder && (
-                    <div style={{
-                      padding: '6px 8px 8px', display: 'flex', gap: 5, alignItems: 'center',
-                      background: 'rgba(99,102,241,0.06)', borderTop: '1px solid rgba(99,102,241,0.2)',
-                    }}>
-                      <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-                        📁 {uploadFolder ? `${uploadFolder}/` : ''}
-                      </span>
-                      <input
-                        autoFocus
-                        value={newFolderInput}
-                        onChange={e => setNewFolderInput(e.target.value)}
-                        onKeyDown={async (e) => {
-                          if (e.key === 'Enter') {
-                            const name = newFolderInput.trim().replace(/[^a-zA-Z0-9._\-/]/g, '_');
-                            if (!name) return;
-                            const fullPath = uploadFolder ? `${uploadFolder}/${name}` : name;
-                            try {
-                              await createFolder.mutateAsync(fullPath);
-                              setExpandedFolders(prev => new Set([...prev, fullPath.split('/')[0], fullPath]));
-                              toast.success(`Created folder: ${fullPath}`);
-                              setShowNewFolder(false);
-                              setNewFolderInput('');
-                            } catch { toast.error('Failed to create folder'); }
-                          }
-                          if (e.key === 'Escape') { setShowNewFolder(false); setNewFolderInput(''); }
-                        }}
-                        placeholder="folder-name  (Enter to create)"
-                        style={{
-                          flex: 1, padding: '4px 7px', fontSize: 10,
-                          background: 'var(--bg-2)', border: '1px solid rgba(99,102,241,0.4)',
-                          borderRadius: 4, color: 'var(--text)', outline: 'none',
-                          fontFamily: 'var(--font-mono)',
-                        }}
-                      />
-                      <button
-                        onClick={async () => {
-                          const name = newFolderInput.trim().replace(/[^a-zA-Z0-9._\-/]/g, '_');
-                          if (!name) return;
-                          const fullPath = uploadFolder ? `${uploadFolder}/${name}` : name;
-                          try {
-                            await createFolder.mutateAsync(fullPath);
-                            setExpandedFolders(prev => new Set([...prev, fullPath.split('/')[0], fullPath]));
-                            toast.success(`Created folder: ${fullPath}`);
-                            setShowNewFolder(false);
-                            setNewFolderInput('');
-                          } catch { toast.error('Failed to create folder'); }
-                        }}
-                        style={{
-                          padding: '4px 8px', fontSize: 10, fontWeight: 700,
-                          background: 'rgba(99,102,241,0.25)', border: '1px solid rgba(99,102,241,0.4)',
-                          borderRadius: 4, cursor: 'pointer', color: '#a5b4fc',
-                        }}
-                      >
-                        Create
-                      </button>
-                    </div>
-                  )}
+                  </>
+                )}
+                {canWrite && (
+                  <button
+                    onClick={() => { setShowNewFolderInput(v => !v); setNewFolderName(''); }}
+                    title="Create new folder"
+                    style={{
+                      padding: '6px 8px', background: showNewFolderInput ? 'rgba(99,102,241,0.18)' : 'transparent',
+                      border: `1px solid ${showNewFolderInput ? 'rgba(99,102,241,0.5)' : 'var(--border)'}`,
+                      borderRadius: 5, cursor: 'pointer', color: '#a5b4fc', fontSize: 11, fontWeight: 700,
+                    }}
+                  >📁+</button>
+                )}
+                <button
+                  onClick={() => void refetchFileTree()}
+                  style={{
+                    padding: '6px 8px', background: 'transparent',
+                    border: '1px solid var(--border)', borderRadius: 5,
+                    cursor: 'pointer', color: 'var(--text-dim)', fontSize: 13,
+                  }}
+                  title="Refresh"
+                >⟳</button>
+                <button
+                  onClick={() => {
+                    setShowSearch(v => {
+                      if (v) { setSearchQuery(''); setSearchResults([]); }
+                      return !v;
+                    });
+                  }}
+                  title="Search files"
+                  style={{
+                    padding: '6px 8px', background: showSearch ? 'rgba(245,158,11,0.15)' : 'transparent',
+                    border: `1px solid ${showSearch ? 'rgba(245,158,11,0.5)' : 'var(--border)'}`,
+                    borderRadius: 5, cursor: 'pointer',
+                    color: showSearch ? '#f59e0b' : 'var(--text-dim)', fontSize: 13,
+                  }}
+                >🔍</button>
+              </div>
+              {showNewFolderInput && (
+                <div style={{
+                  padding: '6px 10px', borderBottom: '1px solid var(--border)',
+                  background: 'rgba(99,102,241,0.06)', display: 'flex', gap: 5, alignItems: 'center',
+                }}>
+                  <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+                    📁 {uploadTargetDir ? `${uploadTargetDir}/` : ''}
+                  </span>
+                  <input
+                    autoFocus
+                    value={newFolderName}
+                    onChange={e => setNewFolderName(e.target.value)}
+                    onKeyDown={async (e) => {
+                      if (e.key === 'Enter') {
+                        const name = newFolderName.trim().replace(/[^a-zA-Z0-9._\- ]/g, '_');
+                        if (!name) return;
+                        const fullPath = uploadTargetDir ? `${uploadTargetDir}/${name}` : name;
+                        try {
+                          await createProjectFolder.mutateAsync(fullPath);
+                          setExpandedTreeDirs(prev => new Set([...prev, fullPath.split('/')[0], fullPath]));
+                          toast.success(`Created: ${fullPath}`);
+                          setShowNewFolderInput(false); setNewFolderName('');
+                        } catch { toast.error('Failed to create folder'); }
+                      }
+                      if (e.key === 'Escape') { setShowNewFolderInput(false); setNewFolderName(''); }
+                    }}
+                    placeholder="folder name  (Enter to create)"
+                    style={{
+                      flex: 1, padding: '4px 7px', fontSize: 10,
+                      background: 'var(--surface)', border: '1px solid rgba(99,102,241,0.4)',
+                      borderRadius: 4, color: 'var(--text)', outline: 'none',
+                      fontFamily: 'var(--font-mono)',
+                    }}
+                  />
+                  <button
+                    onClick={async () => {
+                      const name = newFolderName.trim().replace(/[^a-zA-Z0-9._\- ]/g, '_');
+                      if (!name) return;
+                      const fullPath = uploadTargetDir ? `${uploadTargetDir}/${name}` : name;
+                      try {
+                        await createProjectFolder.mutateAsync(fullPath);
+                        setExpandedTreeDirs(prev => new Set([...prev, fullPath.split('/')[0], fullPath]));
+                        toast.success(`Created: ${fullPath}`);
+                        setShowNewFolderInput(false); setNewFolderName('');
+                      } catch { toast.error('Failed to create folder'); }
+                    }}
+                    style={{
+                      padding: '4px 8px', fontSize: 10, fontWeight: 700,
+                      background: 'rgba(99,102,241,0.25)', border: '1px solid rgba(99,102,241,0.4)',
+                      borderRadius: 4, cursor: 'pointer', color: '#a5b4fc',
+                    }}
+                  >Create</button>
                 </div>
               )}
-
-              {/* Resource file tree */}
-              <div style={{ flex: 1, overflowY: 'auto' }}>
-                {resourcesLoading ? (
-                  <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12 }}>Loading…</div>
-                ) : resources.length === 0 ? (
-                  <div style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 11, lineHeight: 1.7 }}>
-                    <div style={{ fontSize: 28, marginBottom: 8 }}>📁</div>
-                    <div style={{ marginBottom: 10 }}>
-                      No resource files yet. Click <strong style={{ color: 'var(--emerald)' }}>✦ Init Defaults</strong> to auto-create starter files:
-                    </div>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-mid)', textAlign: 'left', display: 'inline-block' }}>
-                      {['common_keywords.robot', 'variables.robot', 'navigation_helpers.robot', 'assertions.robot'].map(f => (
-                        <div key={f} style={{ marginBottom: 2 }}>📄 {f}</div>
-                      ))}
-                    </div>
+              {uploadTargetDir && (
+                <div style={{ padding: '3px 10px', background: 'rgba(99,102,241,0.06)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ fontSize: 9, color: '#a5b4fc', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    ⬆ Upload target: <strong>{uploadTargetDir}/</strong>
+                  </span>
+                  <button onClick={() => setUploadTargetDir('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', fontSize: 11, padding: '0 2px' }}>✕</button>
+                </div>
+              )}
+              {/* Search panel */}
+              {showSearch && (
+                <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+                  <div style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+                    <input
+                      autoFocus
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      placeholder="Search across project files…"
+                      style={{
+                        width: '100%', boxSizing: 'border-box',
+                        padding: '5px 9px', fontSize: 11,
+                        background: 'var(--surface)', border: '1px solid rgba(245,158,11,0.4)',
+                        borderRadius: 4, color: 'var(--text)', outline: 'none',
+                        fontFamily: 'var(--font-mono)',
+                      }}
+                    />
                   </div>
-                ) : (() => {
-                  type RTreeNode =
-                    | { type: 'file'; name: string; path: string; resource: typeof resources[0] }
-                    | { type: 'folder'; name: string; path: string; children: RTreeNode[] };
+                  <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
+                    {searchLoading ? (
+                      <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 11 }}>Searching…</div>
+                    ) : searchQuery.length >= 2 && searchResults.length === 0 ? (
+                      <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 11 }}>No matches found.</div>
+                    ) : (
+                      searchResults.map(result => (
+                        <div key={result.path} style={{ borderBottom: '1px solid var(--border)' }}>
+                          <div
+                            onClick={() => void openProjectFileTab(result.path)}
+                            style={{
+                              padding: '5px 10px', cursor: 'pointer',
+                              color: '#f59e0b', fontSize: 11, fontFamily: 'var(--font-mono)',
+                              fontWeight: 600, wordBreak: 'break-all',
+                            }}
+                          >{result.path}</div>
+                          {result.matches.map((m, mi) => {
+                            const parts = m.text.split(new RegExp(`(${searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'));
+                            return (
+                              <div key={mi} style={{ padding: '2px 10px 2px 20px', display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                                <span style={{ color: 'var(--text-dim)', fontSize: 10, flexShrink: 0, minWidth: 24, textAlign: 'right' }}>{m.line}</span>
+                                <span style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
+                                  {parts.map((part, pi) =>
+                                    part.toLowerCase() === searchQuery.toLowerCase()
+                                      ? <mark key={pi} style={{ background: 'rgba(251,191,36,0.3)', color: '#fbbf24', borderRadius: 2, padding: '0 1px' }}>{part}</mark>
+                                      : part
+                                  )}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+              {/* Tree */}
+              {!showSearch && <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
+                {fileTreeLoading ? (
+                  <div style={{ padding: 16, color: 'var(--text-dim)', fontSize: 12 }}>Loading…</div>
+                ) : !fileTreeData?.tree.length ? (
+                  <div style={{ padding: '24px 16px', textAlign: 'center' }}>
+                    <div style={{ fontSize: 28, marginBottom: 8 }}>📂</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 12 }}>No project files yet</div>
+                    {canWrite && (
+                      <button onClick={() => handleOpenImport('', 'folder' as 'folder')} style={{
+                        padding: '6px 14px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                        background: 'var(--cyan)', color: '#fff', fontWeight: 700, fontSize: 11,
+                      }}>📦 Import Folder</button>
+                    )}
+                  </div>
+                ) : (
+                  (() => {
+                    const FILE_ICONS: Record<string, string> = {
+                      '.robot': '🤖', '.resource': '🔗', '.py': '🐍',
+                      '.xlsx': '📊', '.xls': '📊', '.csv': '📋',
+                      '.txt': '📄', '.yaml': '⚙', '.yml': '⚙', '.json': '⚙',
+                    };
+                    const BTN = (style?: React.CSSProperties): React.CSSProperties => ({
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      color: 'var(--text-dim)', fontSize: 11, padding: '1px 4px',
+                      borderRadius: 3, lineHeight: 1, flexShrink: 0, ...style,
+                    });
 
-                  function buildTree(files: typeof resources): RTreeNode[] {
-                    const root: RTreeNode[] = [];
-                    for (const r of [...files].sort((a, b) => a.filename.localeCompare(b.filename))) {
-                      const parts = r.filename.split('/');
-                      let current = root;
-                      let curPath = '';
-                      for (let i = 0; i < parts.length - 1; i++) {
-                        curPath = curPath ? `${curPath}/${parts[i]}` : parts[i];
-                        let folder = current.find(n => n.type === 'folder' && n.name === parts[i]) as (RTreeNode & { type: 'folder' }) | undefined;
-                        if (!folder) {
-                          folder = { type: 'folder', name: parts[i], path: curPath, children: [] };
-                          current.push(folder);
-                        }
-                        current = folder.children;
-                      }
-                      current.push({ type: 'file', name: parts[parts.length - 1], path: r.filename, resource: r });
-                    }
-                    return root;
-                  }
-
-                  const fileIcon = (name: string) => {
-                    if (name.endsWith('.robot') || name.endsWith('.resource')) return '🤖';
-                    if (name.endsWith('.py')) return '🐍';
-                    if (name.endsWith('.yaml') || name.endsWith('.yml')) return '📋';
-                    if (name.endsWith('.csv') || name.endsWith('.tsv') || name.endsWith('.txt')) return '📄';
-                    return '📎';
-                  };
-                  const isEditable = (name: string) =>
-                    ['.robot', '.resource', '.py', '.yaml', '.yml', '.csv', '.tsv', '.txt'].some(ext => name.endsWith(ext));
-
-                  function renderTree(nodes: RTreeNode[], depth: number): React.ReactNode {
-                    return nodes.map(node => {
-                      if (node.type === 'folder') {
-                        const isOpen = expandedFolders.has(node.path);
-                        const isTarget = uploadFolder === node.path;
-                        const isDragTarget = dragOverFolder === node.path;
+                    const renderNode = (node: FileTreeNode, depth: number): React.ReactNode => {
+                      const indent = depth * 14 + 10;
+                      if (node.type === 'dir') {
+                        const open = expandedTreeDirs.has(node.path);
+                        const isDrop = dragOverDirPath === node.path;
+                        const isUploadTarget = uploadTargetDir === node.path;
                         return (
-                          <React.Fragment key={node.path}>
+                          <div key={node.path}>
                             <div
                               onClick={() => {
-                                setExpandedFolders(prev => {
-                                  const next = new Set(prev);
-                                  isOpen ? next.delete(node.path) : next.add(node.path);
-                                  return next;
-                                });
-                                setUploadFolder(node.path);
-                                const fullPath = resourcesBase ? `${resourcesBase}/${node.path}` : node.path;
-                                setSelectedResourcePath(fullPath);
+                                setExpandedTreeDirs(prev => { const s = new Set(prev); open ? s.delete(node.path) : s.add(node.path); return s; });
+                                setUploadTargetDir(node.path);
                               }}
-                              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverFolder(node.path); }}
-                              onDragLeave={(e) => { e.stopPropagation(); setDragOverFolder(null); }}
+                              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverDirPath(node.path); }}
+                              onDragLeave={(e) => { e.stopPropagation(); setDragOverDirPath(null); }}
                               onDrop={(e) => {
                                 e.preventDefault(); e.stopPropagation();
-                                const filename = e.dataTransfer.getData('text/plain');
-                                setDragOverFolder(null);
-                                if (!filename || filename.startsWith(node.path + '/')) return;
-                                moveResource.mutateAsync({ filename, destination: node.path }).then(() => {
-                                  closeTab(`resource:${filename}`);
-                                  toast.success(`Moved to ${node.name}`);
-                                }).catch(() => toast.error('Move failed'));
+                                const from = e.dataTransfer.getData('text/plain');
+                                setDragOverDirPath(null);
+                                if (!from || from.startsWith(node.path + '/')) return;
+                                const to = `${node.path}/${from.split('/').pop()}`;
+                                moveProjectFile.mutateAsync({ from, to })
+                                  .then(() => toast.success(`Moved to ${node.name}/`))
+                                  .catch(() => toast.error('Move failed'));
                               }}
-                              title={resourcesBase ? `${resourcesBase}/${node.path}` : node.path}
                               style={{
-                                display: 'flex', alignItems: 'center', gap: 6,
-                                padding: `5px 12px 5px ${12 + depth * 14}px`,
-                                cursor: 'pointer', userSelect: 'none',
-                                borderBottom: '1px solid var(--border)',
-                                background: isDragTarget ? 'rgba(99,102,241,0.25)' : isTarget ? 'rgba(99,102,241,0.1)' : 'transparent',
-                                borderLeft: isDragTarget ? '2px solid #818cf8' : isTarget ? '2px solid #818cf8' : '2px solid transparent',
-                                outline: isDragTarget ? '1px dashed #818cf8' : 'none',
+                                display: 'flex', alignItems: 'center', gap: 5,
+                                paddingLeft: indent, paddingRight: 8, paddingTop: 4, paddingBottom: 4,
+                                cursor: 'pointer', borderBottom: '1px solid var(--border)',
+                                background: isDrop ? 'rgba(99,102,241,0.2)' : isUploadTarget ? 'rgba(99,102,241,0.07)' : 'transparent',
+                                borderLeft: isDrop ? '2px solid #818cf8' : isUploadTarget ? '2px solid rgba(99,102,241,0.4)' : '2px solid transparent',
+                                outline: isDrop ? '1px dashed #818cf8' : 'none',
+                                fontSize: 11, fontWeight: 600, color: 'var(--text)',
                               }}
                             >
-                              <span style={{ fontSize: 9, color: 'var(--text-dim)', width: 10, flexShrink: 0 }}>
-                                {isOpen ? '▾' : '▸'}
-                              </span>
-                              <span style={{ fontSize: 12 }}>{isOpen ? '📂' : '📁'}</span>
-                              <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: isTarget ? '#a5b4fc' : 'var(--text)' }}>{node.name}</span>
-                              {canWrite && (
-                                deletingFolder === node.path ? (
-                                  <div style={{ display: 'flex', gap: 3, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
-                                    <span style={{ fontSize: 9, color: 'var(--fail)', whiteSpace: 'nowrap' }}>Delete folder?</span>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        deleteFolder.mutateAsync(node.path).then(() => {
-                                          setDeletingFolder(null);
-                                          if (uploadFolder === node.path) setUploadFolder('');
-                                          toast.success('Folder deleted');
-                                        }).catch(() => toast.error('Delete failed'));
-                                      }}
-                                      style={{ background: 'rgba(220,38,38,0.15)', border: '1px solid rgba(220,38,38,0.3)', cursor: 'pointer', color: 'var(--rose)', fontSize: 9, padding: '1px 5px', borderRadius: 3, fontWeight: 600 }}
-                                    >Yes</button>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); setDeletingFolder(null); }}
-                                      style={{ background: 'none', border: '1px solid var(--border)', cursor: 'pointer', color: 'var(--text-dim)', fontSize: 9, padding: '1px 5px', borderRadius: 3 }}
-                                    >No</button>
-                                  </div>
-                                ) : (
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); setDeletingFolder(node.path); }}
-                                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', fontSize: 12, padding: '2px 4px', lineHeight: 1, borderRadius: 3 }}
-                                    title="Delete folder"
-                                  >✕</button>
-                                )
+                              <span style={{ fontSize: 9, color: 'var(--text-dim)', width: 10 }}>{open ? '▾' : '▸'}</span>
+                              <span>{open ? '📂' : '📁'}</span>
+                              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.name}</span>
+                              {canWrite && deletingFilePath === node.path ? (
+                                <span style={{ display: 'flex', gap: 3, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                                  <span style={{ fontSize: 9, color: 'var(--fail)', whiteSpace: 'nowrap' }}>Delete?</span>
+                                  <button onClick={(e) => { e.stopPropagation(); deleteProjectFile.mutateAsync(node.path).then(() => { setDeletingFilePath(null); toast.success('Deleted'); }).catch(() => toast.error('Delete failed')); }} style={{ ...BTN(), color: 'var(--rose)', fontWeight: 700, fontSize: 9, border: '1px solid rgba(220,38,38,0.3)', background: 'rgba(220,38,38,0.1)' }}>Yes</button>
+                                  <button onClick={(e) => { e.stopPropagation(); setDeletingFilePath(null); }} style={{ ...BTN(), border: '1px solid var(--border)', fontSize: 9 }}>No</button>
+                                </span>
+                              ) : canWrite && (
+                                <button onClick={(e) => { e.stopPropagation(); setDeletingFilePath(node.path); }} style={BTN()} title="Delete folder">✕</button>
                               )}
                             </div>
-                            {isOpen && renderTree(node.children, depth + 1)}
-                          </React.Fragment>
+                            {open && node.children?.map(c => renderNode(c, depth + 1))}
+                          </div>
                         );
                       }
-                      if (node.name === '.gitkeep') return null;
-                      const r = node.resource;
-                      const tabId = `resource:${r.filename}`;
-                      const isActive = activeTabId === tabId;
-                      const isBinary = r.isBinary ?? false;
-                      const canEdit = !isBinary && isEditable(node.name);
+                      // ── file node ──
+                      const icon = FILE_ICONS[node.ext ?? ''] ?? '📄';
+                      const isActive = selectedFilePath === node.path;
+                      const isScript = node.ext === '.robot' || node.ext === '.resource';
+                      const matchingScript = isScript ? scripts.find(s => s.filename === node.path || s.filename.endsWith('/' + node.name)) : undefined;
+                      const isDeleting = deletingFilePath === node.path;
                       return (
                         <div
                           key={node.path}
                           draggable={canWrite}
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData('text/plain', r.filename);
-                            e.dataTransfer.effectAllowed = 'move';
-                          }}
+                          onDragStart={(e) => { e.dataTransfer.setData('text/plain', node.path); setDraggedFilePath(node.path); }}
+                          onDragEnd={() => setDraggedFilePath(null)}
                           onClick={() => {
-                            setSelectedResourcePath(r.containerPath ?? (resourcesBase ? `${resourcesBase}/${r.filename}` : r.filename));
-                            if (canEdit) openResourceTab(r.filename);
+                            setSelectedFilePath(node.path);
+                            if (matchingScript) {
+                              openTab(matchingScript);
+                            } else {
+                              void openProjectFileTab(node.path);
+                            }
                           }}
                           style={{
-                            display: 'flex', alignItems: 'center', gap: 8,
-                            padding: `7px 12px 7px ${22 + depth * 14}px`,
-                            cursor: canWrite ? 'grab' : canEdit ? 'pointer' : 'default',
-                            background: isActive ? 'rgba(42,157,143,0.1)' : 'transparent',
+                            display: 'flex', alignItems: 'center', gap: 5,
+                            paddingLeft: indent + 14, paddingRight: 6, paddingTop: 4, paddingBottom: 4,
+                            cursor: canWrite ? 'grab' : 'pointer',
+                            background: isActive ? 'rgba(34,211,238,0.08)' : 'transparent',
+                            borderLeft: isActive ? '2px solid var(--cyan)' : '2px solid transparent',
                             borderBottom: '1px solid var(--border)',
-                            borderLeft: isActive ? '2px solid var(--emerald)' : '2px solid transparent',
-                            transition: 'all 0.12s',
+                            color: isActive ? 'var(--text)' : 'var(--text-dim)',
+                            fontSize: 11,
+                            opacity: draggedFilePath === node.path ? 0.4 : 1,
+                            transition: 'opacity 0.1s',
                           }}
                         >
-                          <span style={{ fontSize: 11 }}>{isBinary ? (node.name.endsWith('.pdf') ? '📑' : '📊') : fileIcon(node.name)}</span>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {node.name}
-                            </div>
-                            <div style={{ fontSize: 9, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
-                              {r.size >= 1024 * 1024
-                                ? `${(r.size / 1024 / 1024).toFixed(1)} MB`
-                                : `${(r.size / 1024).toFixed(1)} KB`} · {new Date(r.uploadedAt).toLocaleDateString()}
-                            </div>
-                          </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              downloadResource(projectId ?? '', r.filename);
-                              toast.success(`Downloading ${node.name}`);
-                            }}
-                            style={{
-                              background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.25)',
-                              cursor: 'pointer', color: 'var(--cyan)', fontSize: 10, padding: '2px 6px',
-                              borderRadius: 3, fontWeight: 600, flexShrink: 0,
-                            }}
-                            title="Download file"
-                          >↓</button>
-                          {canWrite && movingResource === r.filename ? (
-                            <div style={{ display: 'flex', gap: 3, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
-                              <span style={{ fontSize: 9, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>Move to:</span>
-                              <select
-                                autoFocus
-                                defaultValue="__placeholder__"
-                                onChange={(e) => {
-                                  const dest = e.target.value === '__root__' ? '' : e.target.value;
-                                  moveResource.mutateAsync({ filename: r.filename, destination: dest }).then(() => {
-                                    setMovingResource(null);
-                                    closeTab(`resource:${r.filename}`);
-                                    toast.success('Moved');
-                                  }).catch(() => toast.error('Move failed'));
-                                }}
-                                style={{ fontSize: 9, background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 3px' }}
-                              >
-                                <option value="__placeholder__" disabled>Select folder…</option>
-                                <option value="__root__">(root)</option>
-                                {Array.from(new Set(resources.map(f => {
-                                  const parts = f.filename.split('/');
-                                  return parts.length > 1 ? parts.slice(0, -1).join('/') : null;
-                                }).filter(Boolean) as string[])).sort().map(folder => (
-                                  <option key={folder} value={folder}>{folder}</option>
-                                ))}
-                              </select>
-                              <button
-                                onClick={(e) => { e.stopPropagation(); setMovingResource(null); }}
-                                style={{ background: 'none', border: '1px solid var(--border)', cursor: 'pointer', color: 'var(--text-dim)', fontSize: 9, padding: '1px 5px', borderRadius: 3 }}
-                              >✕</button>
-                            </div>
-                          ) : canWrite && (
-                            deletingResourceFile === r.filename ? (
-                              <div style={{ display: 'flex', gap: 3, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
-                                <span style={{ fontSize: 9, color: 'var(--fail)', whiteSpace: 'nowrap' }}>Delete?</span>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    deleteResource.mutateAsync(r.filename).then(() => {
-                                      closeTab(`resource:${r.filename}`);
-                                      setDeletingResourceFile(null);
-                                      toast.success('Deleted');
-                                    }).catch(() => toast.error('Delete failed'));
-                                  }}
-                                  style={{ background: 'rgba(220,38,38,0.15)', border: '1px solid rgba(220,38,38,0.3)', cursor: 'pointer', color: 'var(--rose)', fontSize: 9, padding: '1px 5px', borderRadius: 3, fontWeight: 600 }}
-                                >Yes</button>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); setDeletingResourceFile(null); }}
-                                  style={{ background: 'none', border: '1px solid var(--border)', cursor: 'pointer', color: 'var(--text-dim)', fontSize: 9, padding: '1px 5px', borderRadius: 3 }}
-                                >No</button>
-                              </div>
-                            ) : (
-                              <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); setMovingResource(r.filename); setDeletingResourceFile(null); }}
-                                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', fontSize: 10, padding: '2px 4px', lineHeight: 1, borderRadius: 3 }}
-                                  title="Move file"
-                                >⇄</button>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); setDeletingResourceFile(r.filename); setMovingResource(null); }}
-                                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', fontSize: 12, padding: '2px 4px', lineHeight: 1, borderRadius: 3 }}
-                                  title="Delete resource file"
-                                >✕</button>
-                              </div>
-                            )
+                          <span>{icon}</span>
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.name}</span>
+                          {isDeleting ? (
+                            <span style={{ display: 'flex', gap: 3, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                              <span style={{ fontSize: 9, color: 'var(--fail)', whiteSpace: 'nowrap' }}>Delete?</span>
+                              <button onClick={(e) => { e.stopPropagation(); deleteProjectFile.mutateAsync(node.path).then(() => { setDeletingFilePath(null); toast.success('Deleted'); }).catch(() => toast.error('Delete failed')); }} style={{ ...BTN(), color: 'var(--rose)', fontWeight: 700, fontSize: 9, border: '1px solid rgba(220,38,38,0.3)', background: 'rgba(220,38,38,0.1)' }}>Yes</button>
+                              <button onClick={(e) => { e.stopPropagation(); setDeletingFilePath(null); }} style={{ ...BTN(), border: '1px solid var(--border)', fontSize: 9 }}>No</button>
+                            </span>
+                          ) : (
+                            <span style={{ display: 'flex', gap: 1, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                              <button onClick={() => { downloadProjectFile(projectId ?? '', node.path); }} style={BTN({ color: 'var(--cyan)' })} title="Download">↓</button>
+                              {canWrite && <button onClick={() => setDeletingFilePath(node.path)} style={BTN()} title="Delete">✕</button>}
+                            </span>
                           )}
                         </div>
                       );
-                    });
-                  }
-
-                  const rootDropActive = dragOverFolder === '__root__';
-                  return (
-                    <>
-                      {canWrite && (
-                        <div
-                          onDragOver={(e) => { e.preventDefault(); setDragOverFolder('__root__'); }}
-                          onDragLeave={() => setDragOverFolder(null)}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            const filename = e.dataTransfer.getData('text/plain');
-                            setDragOverFolder(null);
-                            if (!filename || !filename.includes('/')) return;
-                            moveResource.mutateAsync({ filename, destination: '' }).then(() => {
-                              closeTab(`resource:${filename}`);
-                              toast.success('Moved to root');
-                            }).catch(() => toast.error('Move failed'));
-                          }}
-                          style={{
-                            padding: '4px 12px',
-                            fontSize: 9, color: rootDropActive ? '#a5b4fc' : 'var(--text-dim)',
-                            background: rootDropActive ? 'rgba(99,102,241,0.15)' : 'transparent',
-                            borderBottom: '1px solid var(--border)',
-                            outline: rootDropActive ? '1px dashed #818cf8' : 'none',
-                            textAlign: 'center',
-                            transition: 'all 0.1s',
-                          }}
-                        >
-                          {rootDropActive ? '📂 Drop here to move to root' : '↑ Drop here for root'}
-                        </div>
-                      )}
-                      {renderTree(buildTree(resources), 0)}
-                    </>
-                  );
-                })()}
-              </div>
+                    };
+                    return fileTreeData.tree.map(n => renderNode(n, 0));
+                  })()
+                )}
+              </div>}
             </div>
           )}
+
         </div>
 
         {/* ── DRAG DIVIDER ─────────────────────────────────────────────── */}
@@ -1848,8 +1593,7 @@ export default function Scripts() {
                 minHeight: 32,
               }}>
                 {activeTab?.kind === 'resource' && (() => {
-                  const r = resources.find(res => res.filename === activeTab.filename);
-                  const cp = r?.containerPath ?? `resources/${activeTab.filename}`;
+                  const cp = `resources/${activeTab.filename}`;
                   return (
                     <span
                       style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', marginRight: 'auto', cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
@@ -2069,6 +1813,16 @@ export default function Scripts() {
                       },
                     });
 
+                    // Ctrl+H — Find and Replace
+                    editor.addAction({
+                      id: 'open-find-replace',
+                      label: 'Find and Replace',
+                      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyH],
+                      run: (ed) => {
+                        ed.getAction('editor.action.startFindReplaceAction')?.run();
+                      },
+                    });
+
                     // Ctrl+Click — go to keyword definition
                     editor.onMouseDown((e) => {
                       if (!(e.event.ctrlKey || e.event.metaKey)) return;
@@ -2082,16 +1836,16 @@ export default function Scripts() {
                       }
                     });
                   }}
-                  language={
-                    activeScript?.filename?.endsWith('.robot') ? 'robotframework'
-                    : activeTab?.kind === 'resource'
-                      ? (activeTab.filename.endsWith('.py') ? 'python'
-                        : activeTab.filename.endsWith('.yaml') || activeTab.filename.endsWith('.yml') ? 'yaml'
-                        : activeTab.filename.endsWith('.csv') || activeTab.filename.endsWith('.tsv') ? 'plaintext'
-                        : (activeTab.filename.endsWith('.robot') || activeTab.filename.endsWith('.resource')) ? 'robotframework'
-                        : 'plaintext')
-                    : 'typescript'
-                  }
+                  language={(() => {
+                    const fn = activeTab?.filename ?? '';
+                    if (fn.endsWith('.robot') || fn.endsWith('.resource')) return 'robotframework';
+                    if (fn.endsWith('.py')) return 'python';
+                    if (fn.endsWith('.yaml') || fn.endsWith('.yml')) return 'yaml';
+                    if (fn.endsWith('.json')) return 'json';
+                    if (fn.endsWith('.csv') || fn.endsWith('.tsv')) return 'plaintext';
+                    if (fn.endsWith('.ts') || fn.endsWith('.tsx')) return 'typescript';
+                    return 'plaintext';
+                  })()}
                   theme="vs-dark"
                   value={activeContent}
                   onChange={(v) => {
@@ -2104,7 +1858,7 @@ export default function Scripts() {
                     fontSize: 13, lineHeight: 20,
                     minimap: { enabled: false },
                     scrollBeyondLastLine: false,
-                    wordWrap: 'on', tabSize: activeTab?.kind === 'resource' ? 4 : 2,
+                    wordWrap: 'on', tabSize: (activeTab?.kind === 'resource' || activeTab?.kind === 'projectfile') ? 4 : 2,
                     renderLineHighlight: 'line',
                     scrollbar: { verticalScrollbarSize: 5, horizontalScrollbarSize: 5 },
                     overviewRulerLanes: 0,

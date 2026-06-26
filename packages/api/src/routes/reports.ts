@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction, RequestHandler } from 'express';
 import { z } from 'zod';
 import XLSXStyle from 'xlsx-js-style';
-import JSZip from 'jszip';
+import AdmZip from 'adm-zip';
 import fs from 'fs';
 import { prisma } from '../lib/prisma.js';
 import { verifyToken } from '../middleware/auth.js';
@@ -495,28 +495,90 @@ router.get('/runs/:runId/results/:resultId/video', async (req: Request, res: Res
     // Multiple sessions — bundle into a ZIP
     if (result.videoPath.startsWith('[')) {
       const paths = JSON.parse(result.videoPath) as string[];
-      const zip = new JSZip();
+      const zip = new AdmZip();
       for (let i = 0; i < paths.length; i++) {
         const p = paths[i];
         if (fs.existsSync(p)) {
           const ext = p.toLowerCase().endsWith('.mp4') ? 'mp4' : 'webm';
-          zip.file(`session-${i + 1}.${ext}`, fs.readFileSync(p));
+          zip.addFile(`session-${i + 1}.${ext}`, fs.readFileSync(p));
         }
       }
-      const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' });
+      const buf = zip.toBuffer();
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader('Content-Disposition', `attachment; filename="videos-${runLabelVid}_${result.testCase.tcId}.zip"`);
       res.send(buf);
       return;
     }
 
-    // Single session
+    // Single session — wait for remux to complete if still in progress
+    const vpDl = result.videoPath;
+    const vpDlFast = vpDl.replace('.mp4', '_fast.mp4');
+    const dlDeadline = Date.now() + 30_000;
+    while (true) {
+      if (fs.existsSync(vpDl) && fs.statSync(vpDl).size > 0 && !fs.existsSync(vpDlFast)) break;
+      if (Date.now() > dlDeadline) { res.status(404).json({ error: 'Video file missing on disk' }); return; }
+      await new Promise(r => setTimeout(r, 500));
+    }
     if (!fs.existsSync(result.videoPath)) { res.status(404).json({ error: 'Video file missing on disk' }); return; }
     const videoExt = result.videoPath.toLowerCase().endsWith('.mp4') ? 'mp4' : 'webm';
     const videoMime = videoExt === 'mp4' ? 'video/mp4' : 'video/webm';
     res.setHeader('Content-Type', videoMime);
     res.setHeader('Content-Disposition', `attachment; filename="video-${runLabelVid}_${result.testCase.tcId}.${videoExt}"`);
     fs.createReadStream(result.videoPath).pipe(res);
+  } catch (err) { next(err); }
+});
+
+// ── GET /runs/:runId/results/:resultId/video/stream — Range-aware for inline <video> ──
+
+router.get('/runs/:runId/results/:resultId/video/stream', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await prisma.runResult.findFirst({
+      where: {
+        id: req.params['resultId'],
+        runId: req.params['runId'],
+        run: { projectId: req.project.id },
+      },
+      select: { videoPath: true },
+    });
+    if (!result?.videoPath || result.videoPath.startsWith('[')) {
+      res.status(404).json({ error: 'Single video not available for streaming' }); return;
+    }
+    const vp = result.videoPath;
+    const vpFast = vp.replace('.mp4', '_fast.mp4');
+    // Poll up to 30s: wait for raw file to exist AND remux temp file to be gone
+    const deadline = Date.now() + 30_000;
+    while (true) {
+      const exists = fs.existsSync(vp) && fs.statSync(vp).size > 0;
+      const remuxing = fs.existsSync(vpFast); // remux in progress while _fast.mp4 exists
+      if (exists && !remuxing) break;
+      if (Date.now() > deadline) { res.status(404).json({ error: 'Video file not ready yet — try again in a moment' }); return; }
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    const stat = fs.statSync(vp);
+    const total = stat.size;
+    const mime = vp.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'video/webm';
+    const range = req.headers.range;
+
+    if (range) {
+      const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(startStr, 10);
+      const end = endStr ? parseInt(endStr, 10) : Math.min(start + 10 * 1024 * 1024 - 1, total - 1);
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${total}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': end - start + 1,
+        'Content-Type': mime,
+      });
+      fs.createReadStream(vp, { start, end }).pipe(res);
+    } else {
+      res.writeHead(200, {
+        'Content-Length': total,
+        'Content-Type': mime,
+        'Accept-Ranges': 'bytes',
+      });
+      fs.createReadStream(vp).pipe(res);
+    }
   } catch (err) { next(err); }
 });
 
