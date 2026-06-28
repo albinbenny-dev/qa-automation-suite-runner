@@ -3,7 +3,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { useNavigate, Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import Topbar, { TbBtn } from '../components/layout/Topbar';
-import { useProjects, useCreateProject } from '../hooks/useProjects';
+import { useProjects, useCreateProject, useCloneProject } from '../hooks/useProjects';
 import { useProjectStore } from '../stores/projectStore';
 import { formatRelativeTime, passRateBadgeClass, slugify, PROJECT_GRADIENTS } from '../lib/utils';
 import type { Project } from '../types';
@@ -189,24 +189,65 @@ function CreateProjectModal({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
-  const [name, setName]       = useState('');
-  const [slug, setSlug]       = useState('');
-  const [desc, setDesc]       = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
+  const [name, setName]         = useState('');
+  const [slug, setSlug]         = useState('');
+  const [desc, setDesc]         = useState('');
+  const [baseUrl, setBaseUrl]   = useState('');
   const [colorIdx, setColorIdx] = useState(0);
+
+  // Clone mode
+  const [cloneMode, setCloneMode]       = useState(false);
+  const [sourceId, setSourceId]         = useState('');
+  const [projSearch, setProjSearch]     = useState('');
+  const [showProjDrop, setShowProjDrop] = useState(false);
+
   const createProject = useCreateProject();
+  const cloneProject  = useCloneProject();
+  const { data: allProjects = [] } = useProjects();
   const navigate = useNavigate();
+
+  const sourceProject = allProjects.find((p) => p.id === sourceId) ?? null;
+  const filteredProjects = allProjects.filter((p) =>
+    !projSearch || p.name.toLowerCase().includes(projSearch.toLowerCase()),
+  );
 
   function handleNameChange(v: string) {
     setName(v);
     setSlug(slugify(v));
   }
 
+  function switchMode(toClone: boolean) {
+    setCloneMode(toClone);
+    setSourceId('');
+    setProjSearch('');
+    setName('');
+    setSlug('');
+  }
+
+  const isPending = createProject.isPending || cloneProject.isPending;
+
   async function handleSave() {
-    if (!name.trim()) {
-      toast.error('Project name is required.');
+    if (!name.trim()) { toast.error('Project name is required.'); return; }
+
+    if (cloneMode) {
+      if (!sourceId) { toast.error('Select a project to clone from.'); return; }
+      try {
+        const proj = await cloneProject.mutateAsync({
+          sourceId,
+          name: name.trim(),
+          slug: slug.trim() || undefined,
+          color: PROJECT_GRADIENTS[colorIdx],
+        });
+        toast.success('Project cloned!');
+        onOpenChange(false);
+        navigate(`/projects/${proj.slug}/dashboard`);
+      } catch (err: unknown) {
+        const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Clone failed.';
+        toast.error(msg);
+      }
       return;
     }
+
     try {
       const proj = await createProject.mutateAsync({
         name: name.trim(),
@@ -262,15 +303,113 @@ function CreateProjectModal({
                 marginBottom: '4px',
               }}
             >
-              Create New Project
+              {cloneMode ? 'Clone Project' : 'Create New Project'}
             </Dialog.Title>
             <Dialog.Description
-              style={{ fontSize: '12px', color: 'var(--text-mid)', marginBottom: '24px' }}
+              style={{ fontSize: '12px', color: 'var(--text-mid)', marginBottom: '16px' }}
             >
-              Set up a new workspace for a deployment, product, or team.
+              {cloneMode
+                ? 'Copy an existing project — scripts, TCs, and resources. Run history and reports are excluded.'
+                : 'Set up a new workspace for a deployment, product, or team.'}
             </Dialog.Description>
 
+            {/* ── Mode toggle ── */}
+            <div style={{ display: 'flex', gap: '0', marginBottom: '20px', background: 'var(--surface2)', borderRadius: '7px', padding: '3px', border: '1px solid var(--border)' }}>
+              {(['fresh', 'clone'] as const).map((mode) => {
+                const active = cloneMode ? mode === 'clone' : mode === 'fresh';
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => switchMode(mode === 'clone')}
+                    style={{ flex: 1, padding: '6px 0', fontSize: '11px', fontWeight: 700, borderRadius: '5px', border: 'none', cursor: 'pointer', background: active ? 'var(--surface)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-dim)', boxShadow: active ? '0 1px 4px rgba(0,0,0,0.15)' : 'none', transition: 'all 0.15s' }}
+                  >
+                    {mode === 'fresh' ? '✦ Fresh Project' : '⎘ Clone Existing'}
+                  </button>
+                );
+              })}
+            </div>
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+            {/* ── Source project picker (clone mode only) ── */}
+            {cloneMode && (
+              <div>
+                <label style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: '10px', fontWeight: 700, letterSpacing: '1.2px', textTransform: 'uppercase', color: 'var(--text-mid)', marginBottom: '6px' }}>
+                  Clone From *
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <div
+                    onClick={() => setShowProjDrop((v) => !v)}
+                    style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '9px 12px', background: 'var(--surface)', border: `1px solid ${sourceProject ? 'rgba(37,99,171,0.4)' : 'var(--border2)'}`, borderRadius: '6px', cursor: 'pointer', minHeight: '38px' }}
+                  >
+                    {sourceProject ? (
+                      <>
+                        <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: sourceProject.color ?? 'var(--cyan)', flexShrink: 0 }} />
+                        <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text)', flex: 1 }}>{sourceProject.name}</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-dim)' }}>{sourceProject.slug}</span>
+                      </>
+                    ) : (
+                      <span style={{ fontSize: '13px', color: 'var(--text-dim)', flex: 1 }}>Select a project…</span>
+                    )}
+                    <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>▾</span>
+                  </div>
+                  {showProjDrop && (
+                    <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, background: 'var(--surface)', border: '1px solid var(--border2)', borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,0.3)', zIndex: 100, overflow: 'hidden' }}>
+                      <div style={{ padding: '8px' }}>
+                        <input
+                          autoFocus
+                          value={projSearch}
+                          onChange={(e) => setProjSearch(e.target.value)}
+                          placeholder="Search projects…"
+                          style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '5px', color: 'var(--text)', fontSize: '12px', padding: '6px 8px', outline: 'none', boxSizing: 'border-box' }}
+                          onKeyDown={(e) => { if (e.key === 'Escape') setShowProjDrop(false); }}
+                        />
+                      </div>
+                      <div style={{ maxHeight: '200px', overflowY: 'auto', borderTop: '1px solid var(--border)' }}>
+                        {filteredProjects.length === 0 && (
+                          <div style={{ padding: '12px', textAlign: 'center', fontSize: '11px', color: 'var(--text-dim)' }}>No projects found</div>
+                        )}
+                        {filteredProjects.map((p) => (
+                          <div
+                            key={p.id}
+                            onClick={() => { setSourceId(p.id); setShowProjDrop(false); setProjSearch(''); if (!name) { setName(`${p.name} (Copy)`); setSlug(slugify(`${p.name} copy`)); } }}
+                            style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 12px', borderBottom: '1px solid var(--border)', cursor: 'pointer', background: p.id === sourceId ? 'var(--cyan-dim)' : 'transparent' }}
+                            onMouseEnter={(e) => { if (p.id !== sourceId) (e.currentTarget as HTMLDivElement).style.background = 'var(--surface2)'; }}
+                            onMouseLeave={(e) => { if (p.id !== sourceId) (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
+                          >
+                            <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: p.color ?? 'var(--cyan)', flexShrink: 0 }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', color: 'var(--text-dim)' }}>{p.slug}</div>
+                            </div>
+                            {p.id === sourceId && <span style={{ color: 'var(--cyan)', fontSize: '11px' }}>✓</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {sourceProject && (
+                  <div style={{ marginTop: '8px', padding: '8px 12px', background: 'var(--surface2)', borderRadius: '6px', border: '1px solid var(--border)', display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                    {[
+                      { icon: '📂', label: 'Script Library', val: sourceProject._count?.testCases },
+                      { icon: '📋', label: 'TC Library', val: sourceProject._count?.tcItems },
+                    ].map(({ icon, label, val }) => (
+                      <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px', color: 'var(--text-dim)' }}>
+                        <span>{icon}</span><span style={{ fontWeight: 700, color: 'var(--text)' }}>{val ?? 0}</span><span>{label}</span>
+                      </div>
+                    ))}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px', color: 'var(--text-dim)' }}>
+                      <span style={{ color: 'var(--pass)' }}>✓</span><span>Scripts &amp; Resources</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px', color: 'var(--text-dim)' }}>
+                      <span style={{ color: 'var(--fail)' }}>✗</span><span>Run History &amp; Reports</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
               <div>
                 <label
                   style={{
@@ -322,6 +461,7 @@ function CreateProjectModal({
                 />
               </div>
 
+              {!cloneMode && (
               <div>
                 <label
                   style={{
@@ -345,7 +485,9 @@ function CreateProjectModal({
                   style={{ minHeight: '72px', fontFamily: 'var(--font-ui)', fontSize: '13px' }}
                 />
               </div>
+              )}
 
+              {!cloneMode && (
               <div>
                 <label
                   style={{
@@ -369,6 +511,7 @@ function CreateProjectModal({
                   style={{ fontFamily: 'var(--font-mono)' }}
                 />
               </div>
+              )}
 
               <div>
                 <label
@@ -405,7 +548,7 @@ function CreateProjectModal({
                   ))}
                 </div>
               </div>
-            </div>
+            </div>{/* end fields */}
 
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '28px' }}>
               <Dialog.Close asChild>
@@ -416,21 +559,21 @@ function CreateProjectModal({
               <button
                 type="button"
                 onClick={handleSave}
-                disabled={createProject.isPending}
+                disabled={isPending}
                 style={{
                   padding: '8px 20px',
-                  background: 'linear-gradient(135deg, #F47B20, #D9601A)',
+                  background: cloneMode ? 'linear-gradient(135deg, #2563AB, #1d4ed8)' : 'linear-gradient(135deg, #F47B20, #D9601A)',
                   border: 'none',
                   borderRadius: '6px',
                   color: '#fff',
                   fontSize: '13px',
                   fontWeight: 700,
-                  cursor: createProject.isPending ? 'not-allowed' : 'pointer',
+                  cursor: isPending ? 'not-allowed' : 'pointer',
                   fontFamily: 'var(--font-ui)',
-                  opacity: createProject.isPending ? 0.6 : 1,
+                  opacity: isPending ? 0.6 : 1,
                 }}
               >
-                {createProject.isPending ? 'Creating…' : 'Create Project'}
+                {isPending ? (cloneMode ? 'Cloning…' : 'Creating…') : (cloneMode ? '⎘ Clone Project' : 'Create Project')}
               </button>
             </div>
           </Dialog.Content>

@@ -55,6 +55,19 @@ export function useCreateProject() {
   });
 }
 
+export function useCloneProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ sourceId, name, slug, color }: { sourceId: string; name: string; slug?: string; color?: string }) => {
+      const res = await api.post<{ project: Project }>(`/projects/${sourceId}/clone`, { name, slug, color });
+      return res.data.project;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+}
+
 export function useUpdateProject(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

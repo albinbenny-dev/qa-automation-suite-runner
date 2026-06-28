@@ -40,6 +40,39 @@ function toSlug(name: string): string {
     .slice(0, 60);
 }
 
+// ── File helpers for project cloning ───────────────────────────────────────
+
+function cloneDirRecursive(src: string, dst: string): void {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src)) {
+    const s = path.join(src, entry);
+    const d = path.join(dst, entry);
+    if (fs.statSync(s).isDirectory()) {
+      cloneDirRecursive(s, d);
+    } else {
+      fs.copyFileSync(s, d);
+    }
+  }
+}
+
+const TEXT_EXTS_CLONE = new Set(['.robot', '.resource', '.py', '.yaml', '.yml', '.txt', '.cfg', '.ini', '.tsv', '.csv']);
+
+function replaceSlugInDir(dir: string, oldSlug: string, newSlug: string): void {
+  for (const entry of fs.readdirSync(dir)) {
+    const full = path.join(dir, entry);
+    if (fs.statSync(full).isDirectory()) {
+      replaceSlugInDir(full, oldSlug, newSlug);
+    } else if (TEXT_EXTS_CLONE.has(path.extname(entry).toLowerCase())) {
+      try {
+        const content = fs.readFileSync(full, 'utf-8');
+        if (content.includes(oldSlug)) {
+          fs.writeFileSync(full, content.split(oldSlug).join(newSlug), 'utf-8');
+        }
+      } catch { /* skip unreadable / binary */ }
+    }
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // PUBLIC-PROJECT ROUTES  (auth only, no project membership check)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -528,6 +561,117 @@ projectRouter.delete(
       await prisma.envConfig.delete({ where: { id } });
 
       res.status(204).send();
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ── POST /clone — duplicate project (TCs, scripts, files; no runs/reports) ──
+projectRouter.post(
+  '/clone',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const src = req.project;
+      const { name, slug: rawSlug, color } = req.body as { name?: string; slug?: string; color?: string };
+
+      if (!name?.trim()) {
+        res.status(400).json({ error: 'name is required' });
+        return;
+      }
+
+      const newSlug = rawSlug?.trim() ? toSlug(rawSlug.trim()) : toSlug(name.trim());
+
+      const conflict = await prisma.project.findUnique({ where: { slug: newSlug } });
+      if (conflict) {
+        res.status(409).json({ error: 'A project with this slug already exists', slug: newSlug });
+        return;
+      }
+
+      const SCRIPTS_ROOT = process.env.SCRIPTS_ROOT ?? '/scripts';
+      const srcDir = path.join(SCRIPTS_ROOT, src.slug);
+      const dstDir = path.join(SCRIPTS_ROOT, newSlug);
+
+      // ── DB copy (transaction) ──────────────────────────────────────────────
+      const newProject = await prisma.$transaction(async (tx) => {
+        const p = await tx.project.create({
+          data: {
+            name: name.trim(),
+            slug: newSlug,
+            description: src.description,
+            baseUrl: src.baseUrl,
+            color: color ?? src.color,
+            createdBy: req.user.id,
+          },
+        });
+
+        await tx.projectMember.create({
+          data: { projectId: p.id, userId: req.user.id, role: 'ADMIN' },
+        });
+
+        // Env configs
+        const envs = await tx.envConfig.findMany({ where: { projectId: src.id } });
+        for (const e of envs) {
+          await tx.envConfig.create({
+            data: { projectId: p.id, name: e.name, baseUrl: e.baseUrl, username: e.username, password: e.password, isDefault: e.isDefault },
+          });
+        }
+
+        // TestCases — build ID map
+        const tcs = await tx.testCase.findMany({ where: { projectId: src.id } });
+        const tcMap = new Map<string, string>(); // oldId → newId
+        for (const tc of tcs) {
+          const nt = await tx.testCase.create({
+            data: {
+              projectId: p.id, tcId: tc.tcId, title: tc.title,
+              description: tc.description, steps: tc.steps,
+              expectedResult: tc.expectedResult, type: tc.type,
+              tags: tc.tags, useCaseTag: tc.useCaseTag,
+              status: tc.status, priority: tc.priority,
+            },
+          });
+          tcMap.set(tc.id, nt.id);
+        }
+
+        // Scripts — replace slug in content
+        const scripts = await tx.script.findMany({ where: { projectId: src.id } });
+        for (const s of scripts) {
+          const newTcId = s.testCaseId ? (tcMap.get(s.testCaseId) ?? null) : null;
+          const newContent = s.content.includes(src.slug)
+            ? s.content.split(src.slug).join(newSlug)
+            : s.content;
+          await tx.script.create({
+            data: { projectId: p.id, testCaseId: newTcId, filename: s.filename, content: newContent, scriptType: s.scriptType, isCustomUpload: s.isCustomUpload },
+          });
+        }
+
+        // TcItems
+        const items = await tx.tcItem.findMany({ where: { projectId: src.id } });
+        for (const item of items) {
+          const newLinked = item.linkedScriptId ? (tcMap.get(item.linkedScriptId) ?? null) : null;
+          await tx.tcItem.create({
+            data: { projectId: p.id, srNo: item.srNo, module: item.module, feature: item.feature, title: item.title, description: item.description, steps: item.steps, expectedResult: item.expectedResult, linkedScriptId: newLinked },
+          });
+        }
+
+        // ProjectResources (metadata only — files copied on disk below)
+        const resources = await tx.projectResource.findMany({ where: { projectId: src.id } });
+        for (const r of resources) {
+          await tx.projectResource.create({
+            data: { projectId: p.id, filename: r.filename, originalName: r.originalName, size: r.size },
+          });
+        }
+
+        return p;
+      }, { timeout: 120_000 });
+
+      // ── File copy (disk) ───────────────────────────────────────────────────
+      if (fs.existsSync(srcDir)) {
+        cloneDirRecursive(srcDir, dstDir);
+        replaceSlugInDir(dstDir, src.slug, newSlug);
+      }
+
+      res.status(201).json({ project: newProject });
     } catch (err) {
       next(err);
     }
