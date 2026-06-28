@@ -6,3 +6,12 @@ local_artifacts/
 qaasr-deploy.zip
 .env
 packages/api/prisma/*.db-journal
+
+# Deploy bundle — generated artifacts, never commit
+deploy-bundle/images/
+deploy-bundle/*.tar.gz
+deploy-bundle/*.sql
+deploy-bundle/docker-compose.yml
+*.tar
+qasr-dump.sql
+.deploy-tmp/
