@@ -22,6 +22,26 @@ const router = Router({ mergeParams: true });
 router.use(verifyToken as RequestHandler);
 router.use(requireProjectAccess as unknown as RequestHandler);
 
+/**
+ * After script records are deleted, remove any TestCase that now has no
+ * remaining scripts, and unlink any TcItems that pointed to it.
+ */
+async function cleanOrphanedTestCases(testCaseIds: (string | null)[]): Promise<void> {
+  const ids = [...new Set(testCaseIds.filter(Boolean) as string[])];
+  if (ids.length === 0) return;
+  for (const tcId of ids) {
+    const remaining = await prisma.script.count({ where: { testCaseId: tcId } });
+    if (remaining === 0) {
+      // Unlink any TC Library items that referenced this Script Library entry
+      await prisma.tcItem.updateMany({
+        where: { linkedScriptId: tcId },
+        data: { linkedScriptId: null },
+      }).catch(() => {});
+      await prisma.testCase.delete({ where: { id: tcId } }).catch(() => {});
+    }
+  }
+}
+
 // ── Zod schemas ────────────────────────────────────────────────────────────
 
 const SaveContentSchema = z.object({
@@ -249,13 +269,26 @@ router.delete('/project-file', requireProjectAccess as RequestHandler, async (re
     const stat = fs.statSync(abs);
     if (stat.isDirectory()) {
       fs.rmSync(abs, { recursive: true, force: true });
-      // Delete all DB records whose filename is under this directory
       const prefix = relPath.endsWith('/') ? relPath : relPath + '/';
-      await prisma.script.deleteMany({ where: { projectId, filename: { startsWith: prefix } } }).catch(() => {});
+      const scripts: Array<{ id: string; testCaseId: string | null }> = await prisma.script.findMany({
+        where: { projectId, filename: { startsWith: prefix } },
+        select: { id: true, testCaseId: true },
+      });
+      if (scripts.length > 0) {
+        await prisma.script.deleteMany({ where: { id: { in: scripts.map((s: { id: string }) => s.id) } } });
+        await cleanOrphanedTestCases(scripts.map((s: { testCaseId: string | null }) => s.testCaseId));
+      }
       await prisma.projectResource.deleteMany({ where: { projectId, filename: { startsWith: prefix } } }).catch(() => {});
     } else {
       fs.unlinkSync(abs);
-      await prisma.script.deleteMany({ where: { projectId, filename: relPath } }).catch(() => {});
+      const scripts: Array<{ id: string; testCaseId: string | null }> = await prisma.script.findMany({
+        where: { projectId, filename: relPath },
+        select: { id: true, testCaseId: true },
+      });
+      if (scripts.length > 0) {
+        await prisma.script.deleteMany({ where: { id: { in: scripts.map((s: { id: string }) => s.id) } } });
+        await cleanOrphanedTestCases(scripts.map((s: { testCaseId: string | null }) => s.testCaseId));
+      }
       await prisma.projectResource.deleteMany({ where: { projectId, filename: relPath } }).catch(() => {});
     }
     res.json({ deleted: relPath });
@@ -318,10 +351,81 @@ router.post(
       const projectId = req.project.id;
       const slug = req.project.slug;
       const testCaseId = (req.body?.testCaseId as string | undefined) || null;
+      const tcItemId   = (req.body?.tcItemId   as string | undefined) || null;
       const autoCreateTCs = req.body?.autoCreateTCs === 'true';
 
       const rawContent = req.file.buffer.toString('utf-8');
       let filename = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+
+      // ── TC Library link mode: create a Script Library entry + link the TcItem ──
+      if (tcItemId) {
+        const tcItem = await prisma.tcItem.findFirst({ where: { id: tcItemId, projectId } });
+        if (!tcItem) {
+          res.status(400).json({ error: 'TC Library item not found in this project' });
+          return;
+        }
+
+        // Generate a unique TC ID for the new Script Library entry
+        const existingIds = await prisma.testCase.findMany({ where: { projectId }, select: { tcId: true } });
+        const prefix = slug.replace(/[^a-z0-9]/gi, '').slice(0, 6).toUpperCase() || 'TC';
+        let counter = existingIds.reduce((max, { tcId }) => {
+          const m = tcId.match(/(\d+)$/);
+          return m ? Math.max(max, parseInt(m[1], 10)) : max;
+        }, 0);
+        counter++;
+        const newTcId = `${prefix}-${String(counter).padStart(3, '0')}`;
+
+        // Use the TcItem's feature as the use-case group (falls back to Uncategorised)
+        const useCaseTag = tcItem.feature?.trim() || null;
+        const folderName = useCaseTag ?? 'Uncategorised';
+
+        const libEntry = await prisma.testCase.create({
+          data: {
+            projectId,
+            tcId: newTcId,
+            title: tcItem.title,
+            description: tcItem.description ?? undefined,
+            expectedResult: '',
+            type: 'UI',
+            status: 'DRAFT',
+            ...(useCaseTag ? { useCaseTag } : {}),
+          },
+        });
+
+        // Build filename and save the .robot file under the feature folder
+        filename = buildSystemFilename(libEntry.tcId, libEntry.title, req.file.originalname);
+        filename = `TestCases/${folderName}/${filename}`;
+        saveScript(slug, filename, rawContent);
+
+        const script = await prisma.script.create({
+          data: {
+            projectId,
+            testCaseId: libEntry.id,
+            filename,
+            content: rawContent,
+            scriptType: 'ROBOT',
+            isCustomUpload: true,
+          },
+        });
+
+        // Link the TcItem to the new Script Library entry
+        await prisma.tcItem.update({
+          where: { id: tcItemId },
+          data: { linkedScriptId: libEntry.id },
+        });
+
+        res.status(201).json({
+          id: script.id,
+          filename: script.filename,
+          scriptType: 'ROBOT',
+          testCaseId: libEntry.id,
+          tcItemId,
+          isCustomUpload: true,
+          createdAt: script.createdAt,
+          tcCreated: 0,
+        });
+        return;
+      }
 
       if (testCaseId) {
         const tc = await prisma.testCase.findFirst({ where: { id: testCaseId, projectId } });
@@ -579,9 +683,50 @@ router.post('/project-file/move', requireProjectAccess as RequestHandler, async 
     const absTo   = resolveProjectPath(slug, to);
     if (!fs.existsSync(absFrom)) { res.status(404).json({ error: 'Source not found' }); return; }
     if (fs.existsSync(absTo)) { res.status(409).json({ error: 'Destination already exists' }); return; }
+    const isDir = fs.statSync(absFrom).isDirectory();
     fs.mkdirSync(path.dirname(absTo), { recursive: true });
     fs.renameSync(absFrom, absTo);
-    await prisma.script.updateMany({ where: { projectId, filename: from }, data: { filename: to } }).catch(() => {});
+
+    if (isDir) {
+      // Update filenames for every script under the moved directory
+      const fromPrefix = from.endsWith('/') ? from : from + '/';
+      const toPrefix   = to.endsWith('/') ? to : to + '/';
+      const affected = await prisma.script.findMany({
+        where: { projectId, filename: { startsWith: fromPrefix } },
+        select: { id: true, filename: true },
+      });
+      for (const s of affected) {
+        const newFilename = toPrefix + s.filename.slice(fromPrefix.length);
+        await prisma.script.update({ where: { id: s.id }, data: { filename: newFilename } }).catch(() => {});
+      }
+      // If a TestCases sub-folder was renamed, sync useCaseTag for all TCs in that folder
+      const fromParts = from.split('/');
+      const toParts   = to.split('/');
+      if (fromParts.length === 2 && /^TestCases$/i.test(fromParts[0]) && toParts.length === 2) {
+        await prisma.testCase.updateMany({
+          where: { projectId, useCaseTag: fromParts[1] },
+          data: { useCaseTag: toParts[1] },
+        }).catch(() => {});
+      }
+    } else {
+      await prisma.script.updateMany({ where: { projectId, filename: from }, data: { filename: to } }).catch(() => {});
+      // If a .robot file was moved between TestCases sub-folders, sync its TestCase's useCaseTag
+      const fromParts = from.split('/');
+      const toParts   = to.split('/');
+      if (
+        fromParts.length >= 3 && /^TestCases$/i.test(fromParts[0]) &&
+        toParts.length >= 3 && /^TestCases$/i.test(toParts[0]) &&
+        fromParts[1] !== toParts[1]
+      ) {
+        const script = await prisma.script.findFirst({ where: { projectId, filename: to } });
+        if (script?.testCaseId) {
+          await prisma.testCase.update({
+            where: { id: script.testCaseId },
+            data: { useCaseTag: toParts[1] },
+          }).catch(() => {});
+        }
+      }
+    }
     res.json({ from, to });
   } catch (err) { next(err); }
 });

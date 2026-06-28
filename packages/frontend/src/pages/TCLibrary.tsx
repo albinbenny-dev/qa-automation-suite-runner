@@ -378,7 +378,7 @@ export default function TCLibrary() {
         breadcrumbs={[
           { label: 'All Projects', href: '/projects' },
           { label: `📡 ${project?.name ?? slug ?? ''}`, href: `/projects/${slug}/settings` },
-          { label: '📚 TC Library' },
+          { label: '📂 Script Library' },
         ]}
         actions={
           <>
@@ -552,17 +552,11 @@ export default function TCLibrary() {
                 </div>
               </div>
 
-              {/* Right: group info + expand/collapse */}
+              {/* Right: group info */}
               <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-dim)' }}>
-                  {totalGroups} groups · {totalVisible} TCs
+                  {totalGroups} groups · {totalVisible} scripts
                 </span>
-                <button className="tb-btn tb-btn-ghost" style={{ fontSize: '10px', padding: '3px 8px' }} onClick={handleExpandAll}>
-                  Expand All
-                </button>
-                <button className="tb-btn tb-btn-ghost" style={{ fontSize: '10px', padding: '3px 8px' }} onClick={handleCollapseAll}>
-                  Collapse All
-                </button>
               </div>
             </div>
           </div>

@@ -48,6 +48,7 @@ model Project {
   suites          Suite[]
   reports         Report[]
   resources       ProjectResource[]
+  tcItems         TcItem[]
 
   @@index([createdBy])
 }
@@ -105,6 +106,7 @@ model TestCase {
   project          Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
   scripts          Script[]
   runResults       RunResult[]
+  tcItems          TcItem[]
 
   @@unique([projectId, tcId])
   @@index([projectId])
@@ -231,4 +233,25 @@ model ProjectResource {
 
   @@unique([projectId, filename])
   @@index([projectId])
+}
+
+// ── TC Library — requirement-level test cases imported from Excel ───────────
+model TcItem {
+  id             String    @id @default(cuid())
+  projectId      String
+  srNo           Int?
+  module         String?
+  feature        String?
+  title          String
+  description    String?
+  steps          String?   // raw text from Excel "Step" column
+  expectedResult String?
+  linkedScriptId String?   // FK to TestCase (Script Library entry)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  linkedScript   TestCase? @relation(fields: [linkedScriptId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([linkedScriptId])
 }

@@ -66,10 +66,11 @@ export function useDeleteScript(projectId: string) {
 export function useUploadScript(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ file, testCaseId, autoCreateTCs }: { file: File; testCaseId?: string; autoCreateTCs?: boolean }) => {
+    mutationFn: async ({ file, testCaseId, tcItemId, autoCreateTCs }: { file: File; testCaseId?: string; tcItemId?: string; autoCreateTCs?: boolean }) => {
       const formData = new FormData();
       formData.append('file', file);
       if (testCaseId) formData.append('testCaseId', testCaseId);
+      if (tcItemId) formData.append('tcItemId', tcItemId);
       if (autoCreateTCs) formData.append('autoCreateTCs', 'true');
       const res = await api.post<Script & { converted?: boolean; tcCreated?: number }>(
         `/projects/${projectId}/scripts/upload`,
@@ -80,6 +81,8 @@ export function useUploadScript(projectId: string) {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['scripts', projectId] });
+      qc.invalidateQueries({ queryKey: ['tc-items', projectId] });
+      qc.invalidateQueries({ queryKey: ['tc-items-stats', projectId] });
     },
   });
 }
@@ -168,6 +171,9 @@ export function useDeleteProjectFile(projectId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['file-tree', projectId] });
       qc.invalidateQueries({ queryKey: ['scripts', projectId] });
+      qc.invalidateQueries({ queryKey: ['test-cases', projectId] });
+      qc.invalidateQueries({ queryKey: ['tc-items', projectId] });
+      qc.invalidateQueries({ queryKey: ['tc-items-stats', projectId] });
     },
   });
 }

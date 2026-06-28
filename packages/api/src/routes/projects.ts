@@ -55,6 +55,7 @@ router.get('/', verifyToken as RequestHandler, async (req: Request, res: Respons
         _count: {
           select: {
             testCases: true,
+            tcItems: true,
             members: true,
             runs: true,
           },
@@ -145,7 +146,7 @@ projectRouter.get('/', async (req: Request, res: Response, next: NextFunction) =
       where: { id: req.project.id },
       include: {
         envConfigs: { orderBy: { isDefault: 'desc' } },
-        _count: { select: { members: true, testCases: true, runs: true, scripts: true } },
+        _count: { select: { members: true, testCases: true, tcItems: true, runs: true, scripts: true } },
       },
     });
 
