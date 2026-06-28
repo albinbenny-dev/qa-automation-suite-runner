@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # ── System packages ──────────────────────────────────────────────────────────
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl wget gnupg ca-certificates unzip \
     # Chrome deps
     libglib2.0-0 libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \

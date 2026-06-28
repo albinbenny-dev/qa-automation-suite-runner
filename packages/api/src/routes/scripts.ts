@@ -7,6 +7,7 @@ import AdmZip from 'adm-zip';
 import { prisma } from '../lib/prisma.js';
 import { verifyToken } from '../middleware/auth.js';
 import { requireProjectAccess } from '../middleware/projectAccess.js';
+import { requireAdmin } from '../middleware/rbac.js';
 import {
   saveScript,
   readScript,
@@ -99,7 +100,7 @@ router.get('/project-file/content', requireProjectAccess as RequestHandler, asyn
 
 // ── PUT /project-file/content — save arbitrary project file text ────────────
 
-router.put('/project-file/content', requireProjectAccess as RequestHandler, async (req: Request, res: Response, next: NextFunction) => {
+router.put('/project-file/content', requireAdmin as RequestHandler, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { slug, id: projectId } = req.project;
     const relPath = (req.query['path'] as string | undefined) ?? '';

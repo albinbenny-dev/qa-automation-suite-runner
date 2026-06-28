@@ -1,10 +1,19 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import rateLimit from 'express-rate-limit';
 import { prisma } from '../lib/prisma.js';
 import { generateToken, verifyToken } from '../middleware/auth.js';
 import { z } from 'zod';
 
 const router = Router();
+
+const loginRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts, please try again later' },
+});
 
 const LoginSchema = z.object({
   email:    z.string().email('Invalid email address'),
@@ -23,7 +32,7 @@ const ChangePasswordSchema = z.object({
 });
 
 // POST /api/auth/login
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
   try {
     const parsed = LoginSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -59,6 +68,11 @@ router.post('/login', async (req: Request, res: Response) => {
 // POST /api/auth/register
 router.post('/register', async (req: Request, res: Response) => {
   try {
+    if (process.env.OPEN_REGISTRATION !== 'true') {
+      res.status(403).json({ error: 'Registration is disabled. Contact your administrator.' });
+      return;
+    }
+
     const parsed = RegisterSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
@@ -72,7 +86,7 @@ router.post('/register', async (req: Request, res: Response) => {
       return;
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(password, 12);
     const user = await prisma.user.create({
       data: { email, name, passwordHash, globalRole: 'STANDARD_USER' },
     });

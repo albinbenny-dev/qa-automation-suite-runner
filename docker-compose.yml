@@ -60,13 +60,12 @@ services:
     container_name: qaasr-api
     restart: unless-stopped
     ports:
-      - "4000:4000"
-      - "5555:5555"
+      - "127.0.0.1:4000:4000"
     env_file:
       - .env
     environment:
       - TZ=Asia/Kolkata
-      - NODE_ENV=development
+      - NODE_ENV=${NODE_ENV:-production}
       - PORT=4000
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@qaasr-redis:6379
       - DATABASE_URL=postgresql://${POSTGRES_USER:-qasr}:${POSTGRES_PASSWORD}@qaasr-postgres:5432/${POSTGRES_DB:-qasr}
@@ -109,7 +108,7 @@ services:
       qaasr-api:
         condition: service_healthy
     ports:
-      - "6080:6080"
+      - "127.0.0.1:6080:6080"
     volumes:
       - qaasr-scripts:/scripts
       - qaasr-artifacts:/artifacts

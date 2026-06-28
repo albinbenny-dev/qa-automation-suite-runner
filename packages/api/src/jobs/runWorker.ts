@@ -392,9 +392,13 @@ async function spawnRunner(
   }
 
   try {
+    const runnerHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (process.env.RUNNER_SECRET) {
+      runnerHeaders['x-runner-secret'] = process.env.RUNNER_SECRET;
+    }
     const response = await fetch(`${runnerUrl}/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: runnerHeaders,
       signal: controller.signal,
       body: JSON.stringify({
         scriptPath,

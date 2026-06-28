@@ -254,6 +254,13 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && req.url === '/run') {
+    const runnerSecret = process.env.RUNNER_SECRET;
+    if (runnerSecret && req.headers['x-runner-secret'] !== runnerSecret) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
+
     let body;
     try {
       const chunks = [];
@@ -392,8 +399,6 @@ const server = http.createServer(async (req, res) => {
       '--log',      'log.html',
       '--listener', `${listenerPath}:${effectiveOutputDir}`,
       '--variable', `BASE_URL:${baseUrl || ''}`,
-      '--variable', `TC_USERNAME:${username || ''}`,
-      '--variable', `TC_PASSWORD:${password || ''}`,
       '--variable', `OUTPUTDIR:${effectiveOutputDir}`,
       '--variable', `BROWSER:${seleniumBrowser}`,
       '--variable', `SELENIUM_SPEED:0`,
