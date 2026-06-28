@@ -1,10 +1,10 @@
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  QAASR Deploy Script                                                     ║
-# ║  Usage:                                                                  ║
-# ║    .\deploy.ps1                      # release build only                ║
-# ║    .\deploy.ps1 -Mode full           # release + DB migration + volumes  ║
-# ║    .\deploy.ps1 -SSH qa-server       # override SSH alias                ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
+# ==============================================================================
+# QAASR Deploy Script
+# Usage:
+#   .\deploy.ps1                      # release build only
+#   .\deploy.ps1 -Mode full           # release + DB migration + volumes
+#   .\deploy.ps1 -SSH qa-server       # override SSH alias
+# ==============================================================================
 
 param(
     [ValidateSet('release', 'full')]
@@ -17,7 +17,7 @@ $ErrorActionPreference = 'Stop'
 $ProjectName = 'qa-automation-suite-runner'
 $TmpDir      = "$PSScriptRoot\.deploy-tmp"
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# -- Helpers -------------------------------------------------------------------
 function Log-Step  { param($msg) Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Log-Ok    { param($msg) Write-Host "    [OK] $msg" -ForegroundColor Green }
 function Log-Warn  { param($msg) Write-Host "    [!!] $msg" -ForegroundColor Yellow }
@@ -35,31 +35,25 @@ function Run-SCP {
     if ($LASTEXITCODE -ne 0) { Log-Error "SCP failed: $local -> $remote" }
 }
 
-# ── Banner ────────────────────────────────────────────────────────────────────
+# -- Banner --------------------------------------------------------------------
 Write-Host ""
-Write-Host "  ██████╗  █████╗  █████╗ ███████╗██████╗ " -ForegroundColor DarkCyan
-Write-Host "  ██╔═══╝ ██╔══██╗██╔══██╗██╔════╝██╔══██╗" -ForegroundColor DarkCyan
-Write-Host "  ██║  ███╗███████║███████║███████╗██████╔╝" -ForegroundColor DarkCyan
-Write-Host "  ██║   ██║██╔══██║██╔══██║╚════██║██╔══██╗" -ForegroundColor DarkCyan
-Write-Host "  ╚██████╔╝██║  ██║██║  ██║███████║██║  ██║" -ForegroundColor DarkCyan
-Write-Host "   ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝" -ForegroundColor DarkCyan
-Write-Host ""
-Write-Host "  Deploy Mode : $Mode" -ForegroundColor White
-Write-Host "  Target      : $SSH  ->  $RemoteDir" -ForegroundColor White
+Write-Host "  QAASR Deploy" -ForegroundColor DarkCyan
+Write-Host "  Mode   : $Mode" -ForegroundColor White
+Write-Host "  Target : $SSH  ->  $RemoteDir" -ForegroundColor White
 Write-Host ""
 
 if ($Mode -eq 'full') {
-    Log-Warn "FULL MIGRATION mode — this will stop services, restore DB and volumes."
+    Log-Warn "FULL MIGRATION mode - this will stop services, restore DB and volumes."
     $confirm = Read-Host "  Type YES to continue"
     if ($confirm -ne 'YES') { Write-Host "Aborted." -ForegroundColor Yellow; exit 0 }
 }
 
-# ── Temp dir ──────────────────────────────────────────────────────────────────
+# -- Temp dir ------------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PHASE 1 — Build images
-# ═════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# PHASE 1 - Build images
+# ==============================================================================
 Log-Step "Building Docker images"
 
 Push-Location $PSScriptRoot
@@ -67,9 +61,9 @@ docker compose -p $ProjectName build qaasr-api qaasr-ui qaasr-runner
 if ($LASTEXITCODE -ne 0) { Log-Error "Docker build failed" }
 Log-Ok "Images built"
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PHASE 2 — Save images to tars
-# ═════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# PHASE 2 - Save images to tars
+# ==============================================================================
 Log-Step "Saving images to tar files"
 
 $images = @(
@@ -87,9 +81,9 @@ foreach ($img in $images) {
 }
 Log-Ok "All images saved"
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PHASE 3 — Full migration: dump DB + scripts volume (full mode only)
-# ═════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# PHASE 3 - Full migration: dump DB + scripts volume (full mode only)
+# ==============================================================================
 if ($Mode -eq 'full') {
     Log-Step "Dumping PostgreSQL database from local container"
 
@@ -108,9 +102,9 @@ if ($Mode -eq 'full') {
     Log-Ok "Scripts volume exported"
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PHASE 4 — Copy config files
-# ═════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# PHASE 4 - Copy config files
+# ==============================================================================
 Log-Step "Copying config files to tmp"
 
 Copy-Item "$PSScriptRoot\docker-compose.yml" "$TmpDir\docker-compose.yml" -Force
@@ -121,12 +115,11 @@ if (Test-Path "$PSScriptRoot\nginx\nginx.conf") {
 }
 Log-Ok "Config files ready"
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PHASE 5 — Transfer to remote server
-# ═════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# PHASE 5 - Transfer to remote server
+# ==============================================================================
 Log-Step "Transferring files to $SSH"
 
-# Ensure remote dir exists
 Run-SSH "mkdir -p $RemoteDir"
 
 foreach ($img in $images) {
@@ -151,9 +144,9 @@ if ($Mode -eq 'full') {
 
 Log-Ok "All files transferred"
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PHASE 6 — Load images and restart on remote
-# ═════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# PHASE 6 - Load images and restart on remote
+# ==============================================================================
 Log-Step "Loading images on remote server"
 
 foreach ($img in $images) {
@@ -165,12 +158,11 @@ foreach ($img in $images) {
 Log-Ok "Images loaded"
 
 if ($Mode -eq 'full') {
-    # ── Full migration: stop services, restore DB, restore volumes ───────────
     Log-Step "Stopping services for full migration"
     Run-SSH "cd $RemoteDir && sudo docker-compose -p $ProjectName stop qaasr-api qaasr-runner"
 
     Log-Step "Restoring database"
-    Run-SSH "sudo docker exec qaasr-postgres psql -U qasr -c 'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$$qasr$$ AND pid <> pg_backend_pid();'"
+    Run-SSH "sudo docker exec qaasr-postgres psql -U qasr -c 'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=''qasr'' AND pid <> pg_backend_pid();'"
     Run-SSH "sudo docker exec qaasr-postgres psql -U qasr -c 'DROP DATABASE IF EXISTS qasr;'"
     Run-SSH "sudo docker exec qaasr-postgres psql -U qasr -c 'CREATE DATABASE qasr;'"
     Run-SSH "sudo docker cp $RemoteDir/qasr-dump.sql qaasr-postgres:/tmp/qasr-dump.sql"
@@ -178,24 +170,22 @@ if ($Mode -eq 'full') {
     Log-Ok "Database restored"
 
     Log-Step "Restoring scripts volume"
-    $volRestoreCmd = "sudo docker run --rm -v qa-automation-suite-runner_qaasr-scripts:/scripts -v ${RemoteDir}:/backup:ro alpine sh -c 'rm -rf /scripts/* && tar -xzf /backup/qaasr-scripts.tar.gz -C /scripts'"
-    Run-SSH $volRestoreCmd
+    $volCmd = "sudo docker run --rm -v qa-automation-suite-runner_qaasr-scripts:/scripts -v ${RemoteDir}:/backup:ro alpine sh -c 'rm -rf /scripts/* && tar -xzf /backup/qaasr-scripts.tar.gz -C /scripts'"
+    Run-SSH $volCmd
     Log-Ok "Scripts volume restored"
 
     Log-Step "Starting all services"
     Run-SSH "cd $RemoteDir && sudo docker-compose -p $ProjectName up -d --no-build"
-
 } else {
-    # ── Release only: rolling restart ────────────────────────────────────────
     Log-Step "Rolling restart on remote"
     Run-SSH "cd $RemoteDir && sudo docker-compose -p $ProjectName up -d --no-build"
 }
 
 Log-Ok "Services restarted"
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PHASE 7 — Health check
-# ═════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# PHASE 7 - Health check
+# ==============================================================================
 Log-Step "Waiting for API health check"
 
 $healthy = $false
@@ -203,23 +193,23 @@ for ($i = 1; $i -le 20; $i++) {
     Start-Sleep -Seconds 5
     $result = ssh $SSH "curl -sf http://localhost:4000/health 2>/dev/null && echo OK || echo FAIL"
     if ($result -match 'OK') { $healthy = $true; break }
-    Write-Host "    Waiting... ($($i*5)s)" -ForegroundColor Gray
+    Write-Host "    Waiting... ($($i * 5)s)" -ForegroundColor Gray
 }
 
 if ($healthy) {
     Log-Ok "API is healthy"
 } else {
-    Log-Warn "API health check did not pass within 100s — check logs with:"
+    Log-Warn "API health check timed out - check logs with:"
     Write-Host "    ssh $SSH 'sudo docker logs qaasr-api --tail 50'" -ForegroundColor Yellow
 }
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PHASE 8 — Disk usage
-# ═════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+# PHASE 8 - Disk usage
+# ==============================================================================
 Log-Step "Remote disk usage"
 Run-SSH "df -h /data"
 
-# ── Cleanup temp dir ──────────────────────────────────────────────────────────
+# -- Cleanup -------------------------------------------------------------------
 Log-Step "Cleaning up local temp files"
 Remove-Item -Recurse -Force $TmpDir
 Log-Ok "Done"
@@ -228,6 +218,6 @@ Pop-Location
 
 Write-Host ""
 Write-Host "  Deployment complete!" -ForegroundColor Green
-Write-Host "  Mode    : $Mode" -ForegroundColor White
-Write-Host "  Target  : $SSH -> $RemoteDir" -ForegroundColor White
+Write-Host "  Mode   : $Mode" -ForegroundColor White
+Write-Host "  Target : $SSH -> $RemoteDir" -ForegroundColor White
 Write-Host ""
