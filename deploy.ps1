@@ -170,22 +170,16 @@ if ($Mode -eq 'full') {
     Run-SSH "cd $RemoteDir && sudo docker-compose -p $ProjectName stop qaasr-api qaasr-runner"
 
     Log-Step "Restoring database"
-    Run-SSH @"
-sudo docker exec qaasr-postgres psql -U qasr -c 'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=''qasr'' AND pid <> pg_backend_pid();'
-sudo docker exec qaasr-postgres psql -U qasr -c 'DROP DATABASE IF EXISTS qasr;'
-sudo docker exec qaasr-postgres psql -U qasr -c 'CREATE DATABASE qasr;'
-sudo docker cp $RemoteDir/qasr-dump.sql qaasr-postgres:/tmp/qasr-dump.sql
-sudo docker exec qaasr-postgres psql -U qasr -d qasr -f /tmp/qasr-dump.sql
-"@
+    Run-SSH "sudo docker exec qaasr-postgres psql -U qasr -c 'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$$qasr$$ AND pid <> pg_backend_pid();'"
+    Run-SSH "sudo docker exec qaasr-postgres psql -U qasr -c 'DROP DATABASE IF EXISTS qasr;'"
+    Run-SSH "sudo docker exec qaasr-postgres psql -U qasr -c 'CREATE DATABASE qasr;'"
+    Run-SSH "sudo docker cp $RemoteDir/qasr-dump.sql qaasr-postgres:/tmp/qasr-dump.sql"
+    Run-SSH "sudo docker exec qaasr-postgres psql -U qasr -d qasr -f /tmp/qasr-dump.sql"
     Log-Ok "Database restored"
 
     Log-Step "Restoring scripts volume"
-    Run-SSH @"
-sudo docker run --rm \
-  -v qa-automation-suite-runner_qaasr-scripts:/scripts \
-  -v $RemoteDir:/backup:ro \
-  alpine sh -c 'rm -rf /scripts/* && tar -xzf /backup/qaasr-scripts.tar.gz -C /scripts'
-"@
+    $volRestoreCmd = "sudo docker run --rm -v qa-automation-suite-runner_qaasr-scripts:/scripts -v ${RemoteDir}:/backup:ro alpine sh -c 'rm -rf /scripts/* && tar -xzf /backup/qaasr-scripts.tar.gz -C /scripts'"
+    Run-SSH $volRestoreCmd
     Log-Ok "Scripts volume restored"
 
     Log-Step "Starting all services"
