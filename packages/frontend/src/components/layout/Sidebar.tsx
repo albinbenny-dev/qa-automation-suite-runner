@@ -36,13 +36,14 @@ export default function Sidebar({ slug }: SidebarProps) {
           label: 'Overview',
           items: [
             { label: 'Dashboard', path: `/projects/${slug}/dashboard`, icon: '▦' },
-            { label: 'TC Library', path: `/projects/${slug}/tc-library`, icon: '📋', badge: activeProject?._count?.testCases ?? undefined, badgeVariant: 'green' },
+            { label: 'TC Library', path: `/projects/${slug}/test-cases`, icon: '📋', badge: activeProject?._count?.tcItems ?? undefined, badgeVariant: 'blue' },
+            { label: 'Script Library', path: `/projects/${slug}/tc-library`, icon: '📂', badge: activeProject?._count?.testCases ?? undefined, badgeVariant: 'green' },
           ],
         },
         {
           label: 'Automation',
           items: [
-            { label: 'Scripts', path: `/projects/${slug}/scripts`, icon: '⌨' },
+            { label: 'Script Editor', path: `/projects/${slug}/scripts`, icon: '⌨' },
             { label: 'Execution', path: `/projects/${slug}/execution`, icon: '▶' },
             { label: 'Scheduler', path: `/projects/${slug}/scheduler`, icon: '⏰', badge: activeScheduleCount || undefined, badgeVariant: 'blue' },
           ],

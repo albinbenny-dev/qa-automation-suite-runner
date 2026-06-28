@@ -15,6 +15,29 @@ const router = Router({ mergeParams: true });
 router.use(verifyToken as RequestHandler);
 router.use(requireProjectAccess as unknown as RequestHandler);
 
+const SCRIPTS_ROOT = process.env.SCRIPTS_ROOT ?? '/scripts';
+
+/** Move a script inside TestCases/ to a new use-case folder on disk and update its DB filename. */
+async function syncScriptToUseCase(
+  slug: string,
+  script: { id: string; filename: string },
+  newUseCaseTag: string | null,
+): Promise<void> {
+  const parts = script.filename.split('/');
+  if (parts.length < 3 || !/^TestCases$/i.test(parts[0])) return; // not a TestCases script
+  const basename = parts.slice(2).join('/'); // preserve any sub-path within the use-case folder
+  const newFolder = newUseCaseTag ?? 'Uncategorised';
+  const newFilename = `TestCases/${newFolder}/${basename}`;
+  if (newFilename === script.filename) return;
+  const absFrom = path.join(SCRIPTS_ROOT, slug, script.filename);
+  const absTo   = path.join(SCRIPTS_ROOT, slug, newFilename);
+  if (fs.existsSync(absFrom)) {
+    fs.mkdirSync(path.dirname(absTo), { recursive: true });
+    try { fs.renameSync(absFrom, absTo); } catch { /* tolerate race / missing file */ }
+  }
+  await prisma.script.update({ where: { id: script.id }, data: { filename: newFilename } });
+}
+
 // Multer for seed Excel upload (memory only — never touches disk)
 const seedUpload = multer({
   storage: multer.memoryStorage(),
@@ -422,9 +445,20 @@ router.post('/bulk-update-usecase', async (req: Request, res: Response, next: Ne
       return;
     }
 
+    const { testCaseIds, targetUseCaseTag } = parsed.data;
+
+    // Move any TestCases/ scripts to the new use-case folder before updating the DB
+    const scriptsToMove = await prisma.script.findMany({
+      where: { projectId: req.project.id, testCaseId: { in: testCaseIds } },
+      select: { id: true, filename: true },
+    });
+    for (const s of scriptsToMove) {
+      await syncScriptToUseCase(req.project.slug, s, targetUseCaseTag).catch(() => {});
+    }
+
     const result = await prisma.testCase.updateMany({
-      where: { id: { in: parsed.data.testCaseIds }, projectId: req.project.id },
-      data: { useCaseTag: parsed.data.targetUseCaseTag },
+      where: { id: { in: testCaseIds }, projectId: req.project.id },
+      data: { useCaseTag: targetUseCaseTag },
     });
 
     res.json({ updated: result.count });
@@ -799,6 +833,17 @@ router.put('/:tcId', async (req: Request, res: Response, next: NextFunction) => 
     if (prerequisiteTcId === existing.id) {
       res.status(400).json({ error: 'A test case cannot be its own prerequisite' });
       return;
+    }
+
+    // Sync TestCases/ scripts to the new use-case folder when useCaseTag changes
+    if (parsed.data.useCaseTag !== undefined && parsed.data.useCaseTag !== existing.useCaseTag) {
+      const scripts = await prisma.script.findMany({
+        where: { testCaseId: existing.id, projectId: req.project.id },
+        select: { id: true, filename: true },
+      });
+      for (const s of scripts) {
+        await syncScriptToUseCase(req.project.slug, s, parsed.data.useCaseTag ?? null).catch(() => {});
+      }
     }
 
     const updated = await prisma.testCase.update({

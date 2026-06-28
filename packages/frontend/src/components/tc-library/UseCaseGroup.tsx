@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import React from 'react';
 import type { TestCase } from '../../types';
 import TCTableRow from './TCTableRow';
 
@@ -37,7 +38,6 @@ export default function UseCaseGroup({
   onDeleteGroup,
   onEditTc,
 }: UseCaseGroupProps) {
-  const [expandedTcId, setExpandedTcId] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const tcIds = tcs.map((tc) => tc.id);
@@ -49,10 +49,6 @@ export default function UseCaseGroup({
   function handleHeaderCheckbox(e: React.MouseEvent) {
     e.stopPropagation();
     onToggleGroup(tcIds);
-  }
-
-  function handleExpandTc(id: string | null) {
-    setExpandedTcId((cur) => (cur === id ? null : id));
   }
 
   return (
@@ -255,7 +251,7 @@ export default function UseCaseGroup({
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: '28px 1fr 60px 100px 96px 72px',
+              gridTemplateColumns: '28px 1fr 60px 110px 96px 76px',
               gap: '8px',
               padding: '6px 14px',
               background: 'var(--surface2)',
@@ -290,8 +286,6 @@ export default function UseCaseGroup({
               onRunIndividual={onRunIndividual}
               onDelete={onDeleteTc}
               onEdit={onEditTc}
-              isExpanded={expandedTcId === tc.id}
-              onExpand={handleExpandTc}
             />
           ))}
         </div>

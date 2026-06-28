@@ -8,6 +8,7 @@ import reportsRouter from './reports.js';
 import suitesRouter from './suites.js';
 import adminRouter from './admin.js';
 import resourcesRouter from './resources.js';
+import tcItemsRouter from './tcItems.js';
 import { verifyToken } from '../middleware/auth.js';
 
 const router = Router();
@@ -44,5 +45,8 @@ router.use('/admin', adminRouter);
 
 // ── Robot Framework resources ─────────────────────────────────────────────
 router.use('/projects/:projectId/resources', resourcesRouter);
+
+// ── TC Library items ──────────────────────────────────────────────────────
+router.use('/projects/:projectId/tc-items', tcItemsRouter);
 
 export default router;

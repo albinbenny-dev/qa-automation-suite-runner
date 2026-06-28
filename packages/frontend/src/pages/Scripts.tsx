@@ -11,6 +11,7 @@ import { useProject, useProjectEnvConfigs } from '../hooks/useProjects';
 import { useRBAC } from '../hooks/useRBAC';
 import { useCreateIndividualRun, useRun } from '../hooks/useRuns';
 import { useTestCases, useUseCases } from '../hooks/useTestCases';
+import { useTcItems } from '../hooks/useTcItems';
 import {
   useScripts,
   useSaveScriptContent,
@@ -208,59 +209,59 @@ type UploadType   = 'file' | 'folder';
 
 interface ImportScriptModalProps {
   projectId: string;
-  testCases: TestCase[];        // ALL test cases (not pre-filtered)
-  scriptedTcIds: Set<string>;  // TCs that already have a script
-  preSelectedTcId?: string;
+  tcItems: import('../hooks/useTcItems').TcItem[];   // TC Library items
+  preSelectedTcItemId?: string;
   initialUploadType?: UploadType;
   onClose: () => void;
   onDone?: () => void;
 }
 
 function ImportScriptModal({
-  projectId, testCases, scriptedTcIds,
-  preSelectedTcId, initialUploadType = 'file',
+  projectId, tcItems,
+  preSelectedTcItemId, initialUploadType = 'file',
   onClose, onDone,
 }: ImportScriptModalProps) {
-  const [importMode, setImportMode]   = useState<ImportMode>(preSelectedTcId ? 'link' : 'standalone');
-  const [uploadType, setUploadType]   = useState<UploadType>(initialUploadType);
+  const [importMode, setImportMode]       = useState<ImportMode>(preSelectedTcItemId ? 'link' : 'standalone');
+  const [uploadType, setUploadType]       = useState<UploadType>(initialUploadType);
 
   // ── File upload state ──────────────────────────────────────────────────────
-  const [file, setFile]               = useState<File | null>(null);
-  const [selectedTcId, setSelectedTcId] = useState(preSelectedTcId ?? '');
-  const [search, setSearch]           = useState('');
-  const [busy, setBusy]               = useState(false);
+  const [file, setFile]                   = useState<File | null>(null);
+  const [selectedTcItemId, setSelectedTcItemId] = useState(preSelectedTcItemId ?? '');
+  const [search, setSearch]               = useState('');
+  const [busy, setBusy]                   = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const upload  = useUploadScript(projectId);
 
   // ── Folder import state ────────────────────────────────────────────────────
-  const [folderFile, setFolderFile]   = useState<File | null>(null);
-  const [folderBusy, setFolderBusy]   = useState(false);
-  const [folderResult, setFolderResult] = useState<{
+  const [folderFile, setFolderFile]       = useState<File | null>(null);
+  const [folderBusy, setFolderBusy]       = useState(false);
+  const [folderResult, setFolderResult]   = useState<{
     imported: { filename: string; testCasesCreated: number }[];
-    warnings: string[];
     warnings: string[];
   } | null>(null);
   const folderRef = useRef<HTMLInputElement>(null);
 
-  const filteredTCs = useMemo(() => {
+  const filteredItems = useMemo(() => {
     const q = search.toLowerCase();
-    return testCases
-      .filter((tc) => tc.title.toLowerCase().includes(q) || tc.tcId.toLowerCase().includes(q))
-      .slice(0, 60);
-  }, [testCases, search]);
+    return tcItems
+      .filter((i) =>
+        i.title.toLowerCase().includes(q) ||
+        (i.module ?? '').toLowerCase().includes(q) ||
+        (i.feature ?? '').toLowerCase().includes(q),
+      )
+      .slice(0, 80);
+  }, [tcItems, search]);
 
   async function handleFileImport() {
     if (!file) { toast.error('Select a .robot file first'); return; }
     setBusy(true);
     try {
       if (importMode === 'link') {
-        // Link to existing TC (replace script if TC already has one)
-        const tcId = selectedTcId || undefined;
-        await upload.mutateAsync({ file, testCaseId: tcId });
-        const linked = tcId ? testCases.find((tc) => tc.id === tcId) : null;
+        const itemId = selectedTcItemId || undefined;
+        await upload.mutateAsync({ file, tcItemId: itemId });
+        const linked = itemId ? tcItems.find((i) => i.id === itemId) : null;
         if (linked) {
-          const wasScripted = scriptedTcIds.has(linked.id);
-          toast.success(`${wasScripted ? 'Replaced script for' : 'Linked to'} ${linked.tcId}`);
+          toast.success(`Linked "${linked.title}" — script created in Script Library under Uncategorised`);
         } else {
           toast.success(`Imported ${file.name} (unlinked)`);
         }
@@ -268,7 +269,7 @@ function ImportScriptModal({
         // Standalone — auto-create TCs from *** Test Cases *** section
         const result = await upload.mutateAsync({ file, autoCreateTCs: true });
         const tcCreated = (result as { tcCreated?: number }).tcCreated ?? 0;
-        toast.success(`Imported ${file.name}${tcCreated > 0 ? ` · ${tcCreated} TC${tcCreated > 1 ? 's' : ''} created` : ''}`);
+        toast.success(`Imported ${file.name}${tcCreated > 0 ? ` · ${tcCreated} script entry${tcCreated > 1 ? 's' : ''} created` : ''}`);
       }
       onDone?.();
       onClose();
@@ -380,42 +381,56 @@ function ImportScriptModal({
             </div>
           )}
 
-          {/* ── TC selector — link mode only ─────────────────────────────── */}
+          {/* ── TC selector — link mode only (picks from TC Library) ────── */}
           {uploadType === 'file' && importMode === 'link' && (
             <div>
-              <span style={LABEL_STYLE}>Test Case <span style={{ fontWeight: 400, color: 'var(--text-dim)' }}>(optional)</span></span>
-              <input type="text" placeholder="Search by title or TC ID…" value={search}
+              <span style={LABEL_STYLE}>Test Case <span style={{ fontWeight: 400, color: 'var(--text-dim)' }}>(from TC Library — optional)</span></span>
+              <input type="text" placeholder="Search by title, module or feature…" value={search}
                 onChange={(e) => setSearch(e.target.value)} style={INPUT_STYLE_SM} />
-              <div style={{ maxHeight: 160, overflowY: 'auto', marginTop: 4, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface2)' }}>
-                <div onClick={() => setSelectedTcId('')} style={{
+              <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 4, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface2)' }}>
+                <div onClick={() => setSelectedTcItemId('')} style={{
                   padding: '7px 10px', cursor: 'pointer', fontSize: 11,
-                  background: !selectedTcId ? 'rgba(37,99,171,0.18)' : 'transparent',
-                  color: !selectedTcId ? 'var(--cyan)' : 'var(--text-dim)',
+                  background: !selectedTcItemId ? 'rgba(37,99,171,0.18)' : 'transparent',
+                  color: !selectedTcItemId ? 'var(--cyan)' : 'var(--text-dim)',
                   borderBottom: '1px solid var(--border)',
                 }}>None — upload as unlinked script</div>
-                {filteredTCs.map((tc) => {
-                  const hasScript = scriptedTcIds.has(tc.id);
-                  const isSelected = selectedTcId === tc.id;
+
+                {tcItems.length === 0 && (
+                  <div style={{ padding: '10px', color: 'var(--text-dim)', fontSize: 11, fontStyle: 'italic' }}>
+                    No TCs in TC Library yet — import from Excel first.
+                  </div>
+                )}
+
+                {filteredItems.map((item) => {
+                  const isSelected = selectedTcItemId === item.id;
+                  const isLinked   = !!item.linkedScriptId;
                   return (
-                    <div key={tc.id} onClick={() => setSelectedTcId(tc.id)} style={{
+                    <div key={item.id} onClick={() => setSelectedTcItemId(item.id)} style={{
                       padding: '7px 10px', cursor: 'pointer', fontSize: 11,
                       background: isSelected ? 'rgba(37,99,171,0.18)' : 'transparent',
                       color: isSelected ? 'var(--cyan)' : 'var(--text-mid)',
                       display: 'flex', gap: 8, alignItems: 'center',
                       borderBottom: '1px solid var(--border)',
                     }}>
-                      <span style={{ color: 'var(--text-dim)', flexShrink: 0, fontSize: 10 }}>{tc.tcId}</span>
-                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tc.title}</span>
-                      {hasScript && (
+                      {item.module && (
+                        <span style={{ color: 'var(--text-dim)', flexShrink: 0, fontSize: 9, fontFamily: 'var(--font-mono)' }}>
+                          {item.module}
+                        </span>
+                      )}
+                      {item.srNo != null && (
+                        <span style={{ color: 'var(--text-dim)', flexShrink: 0, fontSize: 9 }}>#{item.srNo}</span>
+                      )}
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
+                      {isLinked && (
                         <span style={{
                           fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4,
                           background: 'rgba(245,158,11,0.15)', color: 'var(--amber)', flexShrink: 0,
-                        }}>⟳ replace</span>
+                        }}>⟳ re-link</span>
                       )}
                     </div>
                   );
                 })}
-                {filteredTCs.length === 0 && search && (
+                {filteredItems.length === 0 && search && (
                   <div style={{ padding: '8px 10px', color: 'var(--text-dim)', fontSize: 11 }}>No matches</div>
                 )}
               </div>
@@ -559,6 +574,7 @@ export default function Scripts() {
   const { data: scripts = [], isLoading: scriptsLoading } = useScripts(projectId);
   const { data: tcData, isLoading: tcsLoading } = useTestCases(projectId, { limit: 500 });
   const { data: useCases = [] } = useUseCases(projectId);
+  const { data: tcItems = [] } = useTcItems(projectId);
 
   const save = useSaveScriptContent(projectId ?? '');
   const deleteScript = useDeleteScript(projectId ?? '');
@@ -1025,15 +1041,16 @@ export default function Scripts() {
       {showImportModal && projectId && (
         <ImportScriptModal
           projectId={projectId}
-          testCases={allTCs}
-          scriptedTcIds={scriptedTcIds}
-          preSelectedTcId={importPreTcId}
+          tcItems={tcItems}
+          preSelectedTcItemId={importPreTcId}
           initialUploadType={importInitialUploadType}
           onClose={() => setShowImportModal(false)}
           onDone={() => {
             void qc.invalidateQueries({ queryKey: ['scripts', projectId] });
             void qc.invalidateQueries({ queryKey: ['file-tree', projectId] });
             void qc.invalidateQueries({ queryKey: ['test-cases', projectId] });
+            void qc.invalidateQueries({ queryKey: ['tc-items', projectId] });
+            void qc.invalidateQueries({ queryKey: ['tc-items-stats', projectId] });
             setLeftTab('projectfiles');
           }}
         />

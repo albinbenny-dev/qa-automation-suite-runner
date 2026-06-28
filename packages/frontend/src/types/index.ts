@@ -28,6 +28,7 @@ export interface Project {
   myRole?: ProjectRole | null;
   _count?: {
     testCases: number;
+    tcItems: number;
     members: number;
     runs?: number;
   };

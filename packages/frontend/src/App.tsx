@@ -6,6 +6,7 @@ import Register from './pages/Register';
 import GlobalProjects from './pages/GlobalProjects';
 import ProjectSettings from './pages/ProjectSettings';
 import TCLibrary from './pages/TCLibrary';
+import TestCaseLibrary from './pages/TestCaseLibrary';
 import Scripts from './pages/Scripts';
 import Execution from './pages/Execution';
 import Dashboard from './pages/Dashboard';
@@ -46,6 +47,7 @@ export default function App() {
 
         {/* Per-project screens */}
         <Route path="/projects/:slug/dashboard"    element={<Dashboard />} />
+        <Route path="/projects/:slug/test-cases"   element={<TestCaseLibrary />} />
         <Route path="/projects/:slug/tc-library"   element={<TCLibrary />} />
         <Route path="/projects/:slug/scripts"      element={<Scripts />} />
         <Route path="/projects/:slug/execution"    element={<Execution />} />

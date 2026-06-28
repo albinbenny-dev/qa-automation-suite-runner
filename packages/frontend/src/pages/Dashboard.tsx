@@ -456,7 +456,7 @@ function TopSuitesCard({
           Last 5 runs shown
         </span>
       </div>
-      <div>
+      <div style={{ maxHeight: 320, overflowY: 'auto' }}>
         {suites.map((suite, idx) => {
           const dots = suite.lastRunStatuses.slice(0, 5);
           return (
@@ -606,9 +606,7 @@ export default function Dashboard() {
     date: p.date.slice(5), // MM-DD
   }));
   const recentRuns = data?.recentRuns ?? [];
-  const agentStatuses = data?.agentStatuses ?? [];
   const topSuites = data?.topSuites ?? [];
-  const projectTokens = data?.projectTokens ?? 0;
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -631,16 +629,15 @@ export default function Dashboard() {
         }
       />
 
-      <div
-        style={{
-          flex: 1,
-          overflow: 'auto',
-          padding: '20px 24px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 20,
-        }}
-      >
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        <div
+          style={{
+            padding: '20px 24px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 20,
+          }}
+        >
         {isLoading ? (
           <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 12, paddingTop: 60 }}>
             Loading dashboard…
@@ -680,7 +677,7 @@ export default function Dashboard() {
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: '1fr 1fr 300px',
+                gridTemplateColumns: '1fr 1fr',
                 gap: 16,
                 alignItems: 'start',
               }}
@@ -780,8 +777,7 @@ export default function Dashboard() {
                 )}
               </div>
 
-              {/* Col 3 — Agent Status + Project Tokens */}
-              <AgentStatusCard statuses={agentStatuses} projectTokens={projectTokens} />
+
             </div>
 
             {/* ── Top 5 Suites ──────────────────────────────────────────── */}
@@ -828,8 +824,8 @@ export default function Dashboard() {
                     Click a row to view run history
                   </span>
                 </div>
-                <div style={{ padding: '4px 0 8px' }}>
-                  {stats!.flakyTests.slice(0, 5).map((t) => {
+                <div style={{ padding: '4px 0 0', maxHeight: 320, overflowY: 'auto' }}>
+                  {stats!.flakyTests.map((t) => {
                     const total = t.passCount + t.failCount;
                     const flakiness = total > 0 ? Math.round((t.failCount / total) * 100) : 0;
                     return (
@@ -942,6 +938,7 @@ export default function Dashboard() {
             )}
           </>
         )}
+        </div>
       </div>
     </div>
   );

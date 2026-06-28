@@ -117,28 +117,22 @@ export default function TCTableRow({
   onDelete,
   onEdit,
   isRunning = false,
-  isExpanded = false,
-  onExpand,
 }: TCTableRowProps) {
   const suiteTags = tc.tags.filter((t) => t.startsWith('suite:'));
   const regularTags = tc.tags.filter((t) => !t.startsWith('suite:'));
 
-  function handleRowClick() {
-    onExpand?.(isExpanded ? null : tc.id);
-  }
-
   return (
     <div style={{ borderBottom: '1px solid var(--border)' }}>
-      {/* Main row — click = expand */}
+      {/* Main row */}
       <div
         className={`tc-item${selected ? ' selected' : ''}`}
         style={{
           display: 'grid',
-          gridTemplateColumns: '28px 1fr 60px 110px 96px 52px',
+          gridTemplateColumns: '28px 1fr 60px 110px 96px 76px',
           gap: '8px',
           padding: '9px 14px',
           alignItems: 'center',
-          cursor: 'pointer',
+          cursor: 'default',
           background: isRunning
             ? 'rgba(37,99,171,0.06)'
             : selected
@@ -152,7 +146,6 @@ export default function TCTableRow({
           transition: 'background 0.15s',
           borderBottom: 'none',
         }}
-        onClick={handleRowClick}
       >
         {/* Checkbox — click selects, does NOT expand */}
         <div
@@ -258,10 +251,9 @@ export default function TCTableRow({
           style={{ display: 'flex', gap: '4px', justifyContent: 'flex-end' }}
           onClick={(e) => e.stopPropagation()}
         >
-          {/* ▶ only shown when a Playwright script exists */}
           {hasScript && (
             <button
-              title="Run this test"
+              title="Run this script"
               onClick={() => onRunIndividual(tc)}
               style={{
                 width: '24px',
@@ -281,17 +273,50 @@ export default function TCTableRow({
               ▶
             </button>
           )}
+          {onEdit && (
+            <button
+              title="Edit title & description"
+              onClick={() => onEdit(tc)}
+              style={{
+                width: '24px',
+                height: '24px',
+                borderRadius: '4px',
+                background: 'var(--surface2)',
+                border: '1px solid var(--border)',
+                color: 'var(--text-dim)',
+                fontSize: '11px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.background = 'var(--cyan-dim)';
+                (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(37,99,171,0.35)';
+                (e.currentTarget as HTMLButtonElement).style.color = 'var(--cyan)';
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface2)';
+                (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)';
+                (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-dim)';
+              }}
+            >
+              ✏
+            </button>
+          )}
           <button
-            title={isExpanded ? 'Collapse details' : 'Expand details'}
-            onClick={(e) => { e.stopPropagation(); onExpand?.(isExpanded ? null : tc.id); }}
+            title="Delete"
+            onClick={() => onDelete(tc)}
             style={{
               width: '24px',
               height: '24px',
               borderRadius: '4px',
-              background: isExpanded ? 'var(--cyan-dim)' : 'var(--surface2)',
-              border: isExpanded ? '1px solid rgba(37,99,171,0.35)' : '1px solid var(--border)',
-              color: isExpanded ? 'var(--cyan)' : 'var(--text-dim)',
-              fontSize: '10px',
+              background: 'transparent',
+              border: '1px solid transparent',
+              color: 'var(--text-dim)',
+              fontSize: '11px',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -299,133 +324,21 @@ export default function TCTableRow({
               flexShrink: 0,
               transition: 'all 0.15s',
             }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = 'rgba(220,38,38,0.1)';
+              (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(220,38,38,0.3)';
+              (e.currentTarget as HTMLButtonElement).style.color = 'var(--fail)';
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+              (e.currentTarget as HTMLButtonElement).style.borderColor = 'transparent';
+              (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-dim)';
+            }}
           >
-            {isExpanded ? '▲' : '▼'}
+            🗑
           </button>
         </div>
       </div>
-
-      {/* Detail panel */}
-      {isExpanded && (
-        <div
-          style={{
-            background: 'var(--surface2)',
-            borderLeft: '3px solid var(--cyan)',
-            padding: '14px 16px 16px 20px',
-          }}
-        >
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-            {/* Left column: steps */}
-            <div>
-              <div style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--text-dim)', fontWeight: 700, marginBottom: '6px' }}>
-                Steps
-              </div>
-              <ol style={{ margin: 0, paddingLeft: '16px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                {tc.steps.map((step, i) => (
-                  <li key={i} style={{ fontSize: '11px', color: 'var(--text)', lineHeight: 1.5 }}>
-                    {step}
-                  </li>
-                ))}
-              </ol>
-            </div>
-
-            {/* Right column: expected result + meta */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {tc.description && (
-                <div>
-                  <div style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--text-dim)', fontWeight: 700, marginBottom: '4px' }}>
-                    Description
-                  </div>
-                  <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-mid)', lineHeight: 1.5 }}>
-                    {tc.description}
-                  </p>
-                </div>
-              )}
-
-              {tc.expectedResult && (
-                <div>
-                  <div style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--text-dim)', fontWeight: 700, marginBottom: '4px' }}>
-                    Expected Result
-                  </div>
-                  <p style={{ margin: 0, fontSize: '11px', color: 'var(--text)', lineHeight: 1.5 }}>
-                    {tc.expectedResult}
-                  </p>
-                </div>
-              )}
-
-              {/* Meta row */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>Priority:</span>
-                <span style={{ fontSize: '10px', fontWeight: 700, color: PRIORITY_COLOR[tc.priority] ?? 'var(--text)' }}>
-                  {tc.priority}
-                </span>
-                {tc.sourceRef && (
-                  <>
-                    <span style={{ color: 'var(--border2)' }}>·</span>
-                    <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>Src:</span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', color: 'var(--cyan)' }}>
-                      {tc.sourceRef}
-                    </span>
-                  </>
-                )}
-              </div>
-
-              {/* All tags */}
-              {tc.tags.length > 0 && (
-                <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                  {tc.tags.map((tag) =>
-                    tag.startsWith('suite:') ? (
-                      <span key={tag} className="tag" style={{ fontSize: '8px', background: 'var(--amber-dim)', color: 'var(--amber)', border: '1px solid rgba(245,158,11,0.3)' }}>
-                        {tag.replace('suite:', '⚡ ')}
-                      </span>
-                    ) : (
-                      <span key={tag} className="tag" style={{ fontSize: '8px' }}>{tag}</span>
-                    )
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Action row */}
-          <div style={{ display: 'flex', gap: '8px', marginTop: '14px', paddingTop: '12px', borderTop: '1px solid var(--border)' }}>
-            {onEdit && (
-              <button
-                onClick={() => onEdit(tc)}
-                style={{
-                  padding: '5px 14px',
-                  background: 'var(--cyan-dim)',
-                  border: '1px solid rgba(37,99,171,0.3)',
-                  borderRadius: '5px',
-                  color: 'var(--cyan)',
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  marginLeft: 'auto',
-                }}
-              >
-                ✏ Edit TC
-              </button>
-            )}
-            <button
-              onClick={() => onDelete(tc)}
-              style={{
-                padding: '5px 14px',
-                background: 'rgba(220,38,38,0.07)',
-                border: '1px solid rgba(220,38,38,0.25)',
-                borderRadius: '5px',
-                color: 'var(--fail)',
-                fontSize: '11px',
-                fontWeight: 700,
-                cursor: 'pointer',
-                ...(onEdit ? {} : { marginLeft: 'auto' }),
-              }}
-            >
-              🗑 Delete TC
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
