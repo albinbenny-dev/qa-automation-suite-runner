@@ -60,7 +60,11 @@ function buildGroups(allTCs: TestCase[], useCases: string[]) {
   }
   return Array.from(map.entries())
     .filter(([, tcs]) => tcs.length > 0)
-    .map(([name, tcs], i) => ({ name, tcs, color: ucColor(name, i) }));
+    .map(([name, tcs], i) => ({
+      name,
+      tcs: [...tcs].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)),
+      color: ucColor(name, i),
+    }));
 }
 
 // ── Types ───────────────────────────────────────────────────────────────────

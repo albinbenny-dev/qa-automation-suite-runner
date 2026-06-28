@@ -271,11 +271,11 @@ export default function Execution() {
   const [elapsedMs, setElapsedMs] = useState(0);
 
   // ── Resizable log panel ───────────────────────────────────────────────────
-  const [logPanelWidth, setLogPanelWidth] = useState(() => Math.round(window.innerWidth / 3));
+  const [logPanelWidth, setLogPanelWidth] = useState(() => Math.round(window.innerWidth * 0.55));
   const isDraggingRef = useRef(false);
   const dragStartXRef = useRef(0);
-  const dragStartWidthRef = useRef(Math.round(window.innerWidth / 3));
-  const logPanelWidthRef = useRef(Math.round(window.innerWidth / 3));
+  const dragStartWidthRef = useRef(Math.round(window.innerWidth * 0.55));
+  const logPanelWidthRef = useRef(Math.round(window.innerWidth * 0.55));
 
   const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -387,7 +387,7 @@ export default function Execution() {
     setActiveRunId(myLatest.id);
     setWatchedRunId(myLatest.id);
     clearLogs();
-    joinRun(myLatest.id);
+    joinRun(myLatest.id, true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRuns, watchedRunId]);
 
@@ -423,7 +423,8 @@ export default function Execution() {
     if (watchedRunId && watchedRunId !== runId) leaveRun(watchedRunId);
     clearLogs();
     setWatchedRunId(runId);
-    joinRun(runId);
+    setActiveRunId(runId);
+    joinRun(runId, true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchedRunId]);
 
@@ -451,7 +452,7 @@ export default function Execution() {
       });
       setActiveRunId(run.id);
       setWatchedRunId(run.id);
-      joinRun(run.id);
+      joinRun(run.id, true);
       toast.success(`Run started · ${tcIds.length} test${tcIds.length !== 1 ? 's' : ''}`);
     } catch (err) {
       const msg = (err as Error)?.message ?? 'Failed to start run';
@@ -476,7 +477,7 @@ export default function Execution() {
       });
       setActiveRunId(run.id);
       setWatchedRunId(run.id);
-      joinRun(run.id);
+      joinRun(run.id, true);
       toast.success(`Running group: ${useCaseTag}`);
     } catch (err) {
       toast.error((err as Error)?.message ?? 'Failed to start group run');
@@ -498,7 +499,7 @@ export default function Execution() {
       });
       setActiveRunId(run.id);
       setWatchedRunId(run.id);
-      joinRun(run.id);
+      joinRun(run.id, true);
       toast.success(`Running: ${tc.tcId}`);
     } catch (err) {
       toast.error((err as Error)?.message ?? 'Failed to start individual run');

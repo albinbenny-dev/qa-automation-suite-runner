@@ -49,14 +49,19 @@ export function useDeleteSuite(projectId: string) {
 }
 
 export function useRunSuite(projectId: string) {
+  const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (data: { suiteId: string; environment: string; name?: string }) => {
+    mutationFn: async (data: { suiteId: string; environment: string; name?: string; parallelWorkers?: number; record?: boolean }) => {
       const { suiteId, ...body } = data;
+      const workers = body.parallelWorkers ?? parseInt(localStorage.getItem('qa:parallelWorkers') ?? '2', 10);
       const res = await api.post<{ run: { id: string; runSeq: number } }>(
         `/projects/${projectId}/suites/${suiteId}/run`,
-        { ...body, parallelWorkers: 2, headless: true, browser: 'chromium' },
+        { ...body, parallelWorkers: workers, headless: false, browser: 'chrome' },
       );
       return res.data.run;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['runs', projectId] });
     },
   });
 }

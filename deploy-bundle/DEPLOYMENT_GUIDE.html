@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>QAASR Deployment Guide — Air-Gapped Linux Server</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.7; color: #e2e8f0; background: #0f172a; padding: 32px 24px; }
+  .page { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 700; color: #f1f5f9; margin-bottom: 4px; }
+  h2 { font-size: 15px; font-weight: 700; color: #f1f5f9; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  h3 { font-size: 13px; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+  .subtitle { font-size: 13px; color: #64748b; margin-bottom: 32px; }
+  .badge { display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 100px; }
+  .badge-blue { background: rgba(37,99,171,0.18); color: #7dd3fc; }
+  .badge-amber { background: rgba(251,191,36,0.12); color: #fbbf24; }
+  .badge-green { background: rgba(42,157,143,0.15); color: #34d399; }
+  .badge-red { background: rgba(220,38,38,0.15); color: #f87171; }
+  .badge-purple { background: rgba(139,92,246,0.15); color: #a78bfa; }
+
+  /* Phase card */
+  .phase { background: #1e293b; border: 1px solid #334155; border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
+  .phase-header { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #334155; background: #1a2744; }
+  .phase-num { width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, #2563AB, #0A2A57); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; color: #fff; flex-shrink: 0; }
+  .phase-title { font-size: 14px; font-weight: 700; color: #f1f5f9; flex: 1; }
+  .phase-where { font-size: 11px; color: #64748b; }
+  .phase-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+
+  /* Step */
+  .step { display: flex; gap: 12px; }
+  .step-dot { width: 6px; height: 6px; border-radius: 50%; background: #334155; margin-top: 8px; flex-shrink: 0; }
+  .step-content { flex: 1; }
+  .step-label { font-size: 12px; color: #94a3b8; margin-bottom: 4px; }
+
+  /* Code block */
+  pre { background: #0f172a; border: 1px solid #1e293b; border-radius: 7px; padding: 12px 14px; font-family: 'Courier New', monospace; font-size: 12px; color: #7dd3fc; overflow-x: auto; line-height: 1.6; margin: 4px 0; }
+  pre .comment { color: #475569; }
+  pre .cmd { color: #7dd3fc; }
+
+  /* Warning / note */
+  .note { display: flex; gap: 10px; padding: 10px 14px; border-radius: 7px; font-size: 12px; line-height: 1.6; }
+  .note-warn { background: rgba(251,191,36,0.07); border: 1px solid rgba(251,191,36,0.2); color: #fbbf24; }
+  .note-info { background: rgba(37,99,171,0.08); border: 1px solid rgba(37,99,171,0.25); color: #7dd3fc; }
+  .note-danger { background: rgba(220,38,38,0.08); border: 1px solid rgba(220,38,38,0.2); color: #f87171; }
+  .note-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+
+  /* File tree */
+  .tree { background: #0f172a; border: 1px solid #1e293b; border-radius: 7px; padding: 12px 14px; font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.8; color: #94a3b8; }
+  .tree .dir { color: #7dd3fc; }
+  .tree .file { color: #e2e8f0; }
+  .tree .note-inline { color: #475569; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; padding: 7px 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; border-bottom: 1px solid #334155; }
+  td { padding: 7px 10px; border-bottom: 1px solid #1e293b; color: #cbd5e1; vertical-align: top; }
+  td:first-child { font-family: 'Courier New', monospace; color: #7dd3fc; font-size: 11px; }
+  .tbl-wrap { background: #1e293b; border: 1px solid #334155; border-radius: 8px; overflow: hidden; margin: 4px 0; }
+
+  /* Inline code */
+  code { font-family: 'Courier New', monospace; font-size: 11px; background: #1e293b; padding: 1px 5px; border-radius: 3px; color: #7dd3fc; }
+
+  /* Divider */
+  .divider { border: none; border-top: 1px solid #1e293b; margin: 24px 0; }
+
+  /* Two col */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  /* Header strip */
+  .header-strip { background: linear-gradient(135deg, #1a2744, #0A2A57); border: 1px solid #2563AB; border-radius: 10px; padding: 20px 24px; margin-bottom: 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .header-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  @media (max-width: 600px) { .two-col { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header-strip">
+    <div>
+      <h1>QAASR Deployment Guide</h1>
+      <div style="font-size:12px;color:#64748b;margin-top:4px;">QA Automation Suite Runner — Air-Gapped Linux Server</div>
+    </div>
+    <div class="header-meta">
+      <span class="badge badge-blue">No Internet</span>
+      <span class="badge badge-green">Docker Compose</span>
+      <span class="badge badge-purple">With Data Migration</span>
+    </div>
+  </div>
+
+  <!-- Prerequisites -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num">0</div>
+      <div class="phase-title">Prerequisites</div>
+      <span class="badge badge-amber">Both Machines</span>
+    </div>
+    <div class="phase-body">
+      <div class="two-col">
+        <div>
+          <h3>Dev Machine</h3>
+          <div class="tbl-wrap">
+            <table>
+              <tr><td>Docker Desktop</td><td style="color:#94a3b8">24+ with Compose plugin</td></tr>
+              <tr><td>SSH alias</td><td style="color:#94a3b8">qa-server configured</td></tr>
+              <tr><td>Project folder</td><td style="color:#94a3b8">qa-automation-suite-runner</td></tr>
+            </table>
+          </div>
+        </div>
+        <div>
+          <h3>Linux Server</h3>
+          <div class="tbl-wrap">
+            <table>
+              <tr><td>Docker Engine</td><td style="color:#94a3b8">Installed (no internet needed)</td></tr>
+              <tr><td>docker-compose</td><td style="color:#94a3b8">Standalone CLI (v1 syntax)</td></tr>
+              <tr><td>Target folder</td><td style="color:#94a3b8">/data/autoab/qa-automation-suite-runner</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="note note-warn">
+        <div class="note-icon">⚠</div>
+        <div>The server uses <code>docker-compose</code> (standalone, v1 syntax) — not <code>docker compose</code> (plugin). Use <code>-p</code> only with <code>docker-compose</code>. Check version: <code>docker-compose --version</code></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 1 -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num">1</div>
+      <div class="phase-title">Build Images on Dev Machine</div>
+      <span class="badge badge-blue">Dev Machine — PowerShell</span>
+    </div>
+    <div class="phase-body">
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Run from inside the project folder</div>
+          <pre>cd "C:\Users\albin\...\qa-automation-suite-runner"
+docker compose -p qa-automation-suite-runner build</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Verify images built successfully</div>
+          <pre>docker images | Select-String "qaasr"</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 2 -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num">2</div>
+      <div class="phase-title">Prepare Deploy Bundle</div>
+      <span class="badge badge-blue">Dev Machine — PowerShell</span>
+    </div>
+    <div class="phase-body">
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Create folder structure</div>
+          <pre>New-Item -ItemType Directory -Force deploy-bundle\images
+New-Item -ItemType Directory -Force deploy-bundle\nginx</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Save all Docker images to tar files</div>
+          <pre>docker save qaasr-api:latest    -o deploy-bundle\images\qaasr-api.tar
+docker save qaasr-ui:latest     -o deploy-bundle\images\qaasr-ui.tar
+docker save qaasr-runner:latest -o deploy-bundle\images\qaasr-runner.tar
+docker save postgres:16-alpine  -o deploy-bundle\images\qaasr-postgres.tar
+docker save redis:7-alpine      -o deploy-bundle\images\qaasr-redis.tar</pre>
+          <div style="margin-top:4px;font-size:11px;color:#64748b;">postgres and redis only needed for a <strong>fresh server install</strong> — skip them for update deployments (use <code>.\deploy.ps1</code> instead).</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Copy config files</div>
+          <pre>Copy-Item docker-compose.yml  deploy-bundle\
+Copy-Item .env               deploy-bundle\
+Copy-Item nginx\nginx.conf   deploy-bundle\nginx\</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Export Postgres database — write dump file from inside the container (avoids Windows UTF-16 encoding corruption from PowerShell > redirect)</div>
+          <pre>docker exec qaasr-postgres pg_dump -U qasr qasr -f /tmp/qasr-dump.sql
+docker cp qaasr-postgres:/tmp/qasr-dump.sql deploy-bundle\qasr-dump.sql</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Export robot scripts volume</div>
+          <pre>docker run --rm `
+  -v qa-automation-suite-runner_qaasr-scripts:/scripts `
+  -v "${PWD}/deploy-bundle:/backup" `
+  alpine tar czf /backup/qaasr-scripts.tar.gz -C /scripts .</pre>
+        </div>
+      </div>
+      <div class="note note-info">
+        <div class="note-icon">ℹ</div>
+        <div>Artifacts (videos/screenshots) and run history are intentionally excluded — fresh start on the server.</div>
+      </div>
+
+      <hr class="divider" style="margin:8px 0" />
+      <h3>Expected bundle structure</h3>
+      <div class="tree">
+<span class="dir">deploy-bundle/</span>
+├── <span class="dir">images/</span>
+│   ├── <span class="file">qaasr-api.tar</span>
+│   ├── <span class="file">qaasr-ui.tar</span>
+│   ├── <span class="file">qaasr-runner.tar</span>
+│   ├── <span class="file">qaasr-postgres.tar</span>
+│   └── <span class="file">qaasr-redis.tar</span>
+├── <span class="dir">nginx/</span>
+│   └── <span class="file">nginx.conf</span>
+├── <span class="file">docker-compose.yml</span>
+├── <span class="file">.env</span>
+├── <span class="file">qasr-dump.sql</span>     <span class="note-inline">← database export</span>
+└── <span class="file">qaasr-scripts.tar.gz</span>   <span class="note-inline">← robot script files</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 3 -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num">3</div>
+      <div class="phase-title">Package &amp; Transfer</div>
+      <span class="badge badge-blue">Dev Machine — PowerShell</span>
+    </div>
+    <div class="phase-body">
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Create tar.gz (use -C . to avoid path errors)</div>
+          <pre>tar -czf qaasr-deploy.tar.gz -C . deploy-bundle</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Transfer to server via SCP</div>
+          <pre>scp qaasr-deploy.tar.gz qa-server:/data/autoab/qa-automation-suite-runner/</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 4 -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num">4</div>
+      <div class="phase-title">Stop Existing Services on Server</div>
+      <span class="badge badge-amber">Linux Server — Bash</span>
+    </div>
+    <div class="phase-body">
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">SSH into server</div>
+          <pre>ssh qa-server</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Check which containers are using ports 3000/4000</div>
+          <pre>sudo docker ps --format "table {{.Names}}\t{{.Ports}}" | grep -E "3000|4000"</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Find the compose project name</div>
+          <pre>sudo docker inspect qa-ui --format \
+  "{{index .Config.Labels \"com.docker.compose.project\"}}"</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Bring down qa-infinity (or whichever project is running)</div>
+          <pre>sudo docker-compose -p qa-infinity down</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Verify ports are free</div>
+          <pre>ss -tlnp | grep -E "3000|4000"
+<span class="comment"># Should return nothing</span></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 5 -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num">5</div>
+      <div class="phase-title">Extract &amp; Load Images</div>
+      <span class="badge badge-amber">Linux Server — Bash</span>
+    </div>
+    <div class="phase-body">
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Extract the bundle (use sudo to avoid permission errors)</div>
+          <pre>cd /data/autoab/qa-automation-suite-runner
+sudo tar -xvzf qaasr-deploy.tar.gz</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Load all Docker images</div>
+          <pre>cd deploy-bundle
+sudo docker load -i images/qaasr-api.tar
+sudo docker load -i images/qaasr-ui.tar
+sudo docker load -i images/qaasr-runner.tar
+sudo docker load -i images/qaasr-postgres.tar
+sudo docker load -i images/qaasr-redis.tar</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Verify images loaded</div>
+          <pre>sudo docker images | grep qaasr</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 6 -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num">6</div>
+      <div class="phase-title">Start the Stack</div>
+      <span class="badge badge-amber">Linux Server — Bash</span>
+    </div>
+    <div class="phase-body">
+      <div class="note note-warn">
+        <div class="note-icon">⚠</div>
+        <div>Run from the <strong>parent folder</strong> (<code>/data/autoab/qa-automation-suite-runner</code>), not from inside <code>deploy-bundle/</code>. Docker Compose looks for <code>.env</code> and <code>docker-compose.yml</code> in the current directory — if they are only inside <code>deploy-bundle/</code> the <code>POSTGRES_PASSWORD</code> variable will be missing and startup will fail.</div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Copy config files to the parent folder first</div>
+          <pre>cp deploy-bundle/.env .
+cp deploy-bundle/docker-compose.yml .</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Start all services from the parent folder</div>
+          <pre>sudo docker-compose -p qa-automation-suite-runner up -d</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Check all containers are running</div>
+          <pre>sudo docker-compose -p qa-automation-suite-runner ps</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Check API logs for startup errors</div>
+          <pre>sudo docker logs qaasr-api --tail 20</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 7 -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num">7</div>
+      <div class="phase-title">Restore Data</div>
+      <span class="badge badge-amber">Linux Server — Bash</span>
+    </div>
+    <div class="phase-body">
+      <div class="note note-warn">
+        <div class="note-icon">⚠</div>
+        <div>Wait ~15 seconds after <code>up -d</code> for Postgres to fully initialize before restoring.</div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Restore Postgres database</div>
+          <pre>cat qasr-dump.sql | sudo docker exec -i qaasr-postgres psql -U qasr qasr</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Restore robot scripts volume</div>
+          <pre>sudo docker run --rm \
+  -v qa-automation-suite-runner_qaasr-scripts:/scripts \
+  -v $(pwd):/backup \
+  alpine tar xzf /backup/qaasr-scripts.tar.gz -C /scripts</pre>
+        </div>
+      </div>
+      <div class="note note-danger">
+        <div class="note-icon">✕</div>
+        <div>The API runs <code>prisma db push</code> on startup and creates the schema automatically. If you restore the dump into a database that already has tables you will get <code>relation already exists</code> errors. Always stop the API first, drop the database, recreate it, then restore.</div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Stop API and runner first — they hold active DB connections that block the drop</div>
+          <pre>sudo docker stop qaasr-api qaasr-runner</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Drop and recreate the database cleanly</div>
+          <pre>sudo docker exec -i qaasr-postgres psql -U qasr postgres -c "DROP DATABASE qasr;"
+sudo docker exec -i qaasr-postgres psql -U qasr postgres -c "CREATE DATABASE qasr;"</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Restore the dump into the clean database</div>
+          <pre>cat qasr-dump.sql | sudo docker exec -i qaasr-postgres psql -U qasr qasr</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Start API and runner back up</div>
+          <pre>sudo docker start qaasr-api qaasr-runner</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Verify data restored correctly</div>
+          <pre>sudo docker exec -i qaasr-postgres psql -U qasr qasr -c "SELECT email FROM \"User\";"</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 8 -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num">8</div>
+      <div class="phase-title">Verify Deployment</div>
+      <span class="badge badge-amber">Linux Server — Bash</span>
+    </div>
+    <div class="phase-body">
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Check all 5 containers are healthy</div>
+          <pre>sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Test API health endpoint</div>
+          <pre>curl http://localhost:4000/health</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Access UI in browser</div>
+          <pre>http://&lt;server-ip&gt;:3000</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Future updates -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num">↻</div>
+      <div class="phase-title">Future Updates — Use deploy.ps1</div>
+      <span class="badge badge-purple">Dev Machine — PowerShell</span>
+    </div>
+    <div class="phase-body">
+      <div class="note note-info">
+        <div class="note-icon">ℹ</div>
+        <div><code>deploy.ps1</code> at the repo root automates all update steps. Run it from the project folder in PowerShell. It builds images, saves tars, SCPs to the server, loads, and restarts — with a health check and disk usage summary at the end.</div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Code changes only — build, transfer, rolling restart</div>
+          <pre>.\deploy.ps1</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Full migration — code + DB dump + scripts volume restore</div>
+          <pre>.\deploy.ps1 -Mode full</pre>
+          <div style="margin-top:4px;font-size:11px;color:#64748b;">Prompts "Type YES" before touching the database. Stops api+runner, drops/recreates DB, restores dump and scripts volume, then starts everything back up.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Override SSH alias or remote path if needed</div>
+          <pre>.\deploy.ps1 -SSH my-server -RemoteDir /opt/qasr</pre>
+        </div>
+      </div>
+      <div class="note note-danger">
+        <div class="note-icon">✕</div>
+        <div>Never run <code>docker-compose down -v</code> — the <code>-v</code> flag deletes all volumes including the database.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reference -->
+  <hr class="divider" />
+  <h2>Quick Reference</h2>
+
+  <div class="two-col" style="margin-top:12px">
+    <div>
+      <h3>Ports</h3>
+      <div class="tbl-wrap">
+        <table>
+          <tr><th>Service</th><th>Port</th></tr>
+          <tr><td>UI</td><td style="color:#94a3b8">3000 → 80</td></tr>
+          <tr><td>API</td><td style="color:#94a3b8">4000 → 4000</td></tr>
+          <tr><td>Runner (VNC)</td><td style="color:#94a3b8">6080 → 6080</td></tr>
+        </table>
+      </div>
+    </div>
+    <div>
+      <h3>Volumes (do not delete)</h3>
+      <div class="tbl-wrap">
+        <table>
+          <tr><th>Volume</th><th>Contents</th></tr>
+          <tr><td>qaasr-pgdata</td><td style="color:#94a3b8">Database files</td></tr>
+          <tr><td>qaasr-scripts</td><td style="color:#94a3b8">Robot scripts</td></tr>
+          <tr><td>qaasr-artifacts</td><td style="color:#94a3b8">Videos / screenshots</td></tr>
+          <tr><td>qaasr-data</td><td style="color:#94a3b8">API persistent data</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:24px">
+    <h3>Useful Commands</h3>
+    <div class="tbl-wrap">
+      <table>
+        <tr><th>Command</th><th>Purpose</th></tr>
+        <tr><td>sudo docker-compose -p qa-automation-suite-runner ps</td><td style="color:#94a3b8">Check all container statuses</td></tr>
+        <tr><td>sudo docker logs qaasr-api --tail 50</td><td style="color:#94a3b8">API logs</td></tr>
+        <tr><td>sudo docker logs qaasr-runner --tail 50</td><td style="color:#94a3b8">Runner logs</td></tr>
+        <tr><td>sudo docker exec -it qaasr-postgres psql -U qasr qasr</td><td style="color:#94a3b8">Open DB shell</td></tr>
+        <tr><td>sudo docker-compose -p qa-automation-suite-runner restart qaasr-api</td><td style="color:#94a3b8">Restart single service</td></tr>
+        <tr><td>ss -tlnp | grep -E "3000|4000"</td><td style="color:#94a3b8">Check if ports are free</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- Troubleshooting -->
+  <hr class="divider" />
+  <h2>Troubleshooting</h2>
+
+  <!-- Issue 1 -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num" style="background:linear-gradient(135deg,#dc2626,#7f1d1d)">!</div>
+      <div class="phase-title">DB restore fails with "relation already exists"</div>
+      <span class="badge badge-red">DB Error</span>
+    </div>
+    <div class="phase-body">
+      <div class="note note-warn">
+        <div class="note-icon">⚠</div>
+        <div>The API runs <code>prisma db push</code> on startup and pre-creates the schema. Restoring the dump into an already-initialised database causes conflicts. Stop the API first to release DB connections, then drop and recreate cleanly.</div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Stop containers that hold DB connections</div>
+          <pre>sudo docker stop qaasr-api qaasr-runner</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Drop and recreate the database</div>
+          <pre>sudo docker exec -i qaasr-postgres psql -U qasr postgres -c "DROP DATABASE qasr;"
+sudo docker exec -i qaasr-postgres psql -U qasr postgres -c "CREATE DATABASE qasr;"</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Restore the dump then start containers</div>
+          <pre>cat deploy-bundle/qasr-dump.sql | sudo docker exec -i qaasr-postgres psql -U qasr qasr
+sudo docker start qaasr-api qaasr-runner</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Issue 3 -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num" style="background:linear-gradient(135deg,#dc2626,#7f1d1d)">!</div>
+      <div class="phase-title">Video recording fails — "Cannot open display :99"</div>
+      <span class="badge badge-red">Runner Error</span>
+    </div>
+    <div class="phase-body">
+      <div class="note note-warn">
+        <div class="note-icon">⚠</div>
+        <div>Xvfb (virtual display) failed to start during container startup. The <code>set -e</code> in the entrypoint caused x11vnc to exit early when the display wasn't ready yet, leaving Xvfb dead.</div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Check if Xvfb, openbox and x11vnc are running</div>
+          <pre>sudo docker exec qaasr-runner ps aux | grep -E "Xvfb|x11vnc|openbox"</pre>
+          <div style="margin-top:4px;font-size:11px;color:#64748b;">All three should appear. If any are missing, proceed below.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Restart the runner container — the entrypoint will re-run and start Xvfb cleanly</div>
+          <pre>sudo docker restart qaasr-runner
+sleep 5
+sudo docker exec qaasr-runner ps aux | grep -E "Xvfb|x11vnc|openbox"</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Expected output after successful restart — all three processes visible</div>
+          <pre style="color:#34d399;">root   Xvfb :99 -screen 0 1280x900x24 -ac +extension GLX +render -noreset
+root   openbox
+root   x11vnc -display :99 -forever -nopw -quiet -rfbport 5900</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Issue 4 -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num" style="background:linear-gradient(135deg,#dc2626,#7f1d1d)">!</div>
+      <div class="phase-title">POSTGRES_PASSWORD missing — stack fails to start</div>
+      <span class="badge badge-red">Config Error</span>
+    </div>
+    <div class="phase-body">
+      <div class="note note-warn">
+        <div class="note-icon">⚠</div>
+        <div>Running <code>docker-compose up</code> from inside <code>deploy-bundle/</code> means the <code>.env</code> file is not found in the current directory.</div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Copy config files to the parent folder and run from there</div>
+          <pre>cp deploy-bundle/.env .
+cp deploy-bundle/docker-compose.yml .
+sudo docker-compose -p qa-automation-suite-runner up -d</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Server-specific config -->
+  <hr class="divider" />
+  <h2>Server-Specific Configuration</h2>
+
+  <!-- Extra hosts -->
+  <div class="phase" style="margin-top:12px">
+    <div class="phase-header">
+      <div class="phase-num" style="background:linear-gradient(135deg,#7c3aed,#4c1d95)">H</div>
+      <div class="phase-title">Internal Hostname Resolution (extra_hosts)</div>
+      <span class="badge badge-purple">docker-compose.yml</span>
+    </div>
+    <div class="phase-body">
+      <div class="note note-info">
+        <div class="note-icon">ℹ</div>
+        <div>If the target application uses an internal hostname (e.g. <code>*.ocplab.6d.local</code>) that is not in public DNS, Chrome inside the runner container cannot resolve it. Add <code>extra_hosts</code> to map the hostname to its IP permanently.</div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Add extra_hosts under qaasr-runner in docker-compose.yml</div>
+          <pre>  qaasr-runner:
+    image: qaasr-runner:latest
+    container_name: qaasr-runner
+    restart: unless-stopped
+    extra_hosts:
+      - "airtel6d-in-ventas-master-int-aavm-alpha-01.ocplab.6d.local:10.0.12.244"
+    environment:</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Recreate the runner container to apply</div>
+          <pre>sudo docker-compose -p qa-automation-suite-runner up -d --no-build qaasr-runner</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Verify hostname resolves inside the container</div>
+          <pre>sudo docker exec qaasr-runner cat /etc/hosts | grep ocplab</pre>
+        </div>
+      </div>
+      <div class="note note-warn">
+        <div class="note-icon">⚠</div>
+        <div>Do NOT add the bind mount to the top-level <code>volumes:</code> block — <code>extra_hosts</code> goes under the service definition only. Top-level volumes are only for named Docker volumes.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CA Certificate -->
+  <div class="phase">
+    <div class="phase-header">
+      <div class="phase-num" style="background:linear-gradient(135deg,#7c3aed,#4c1d95)">C</div>
+      <div class="phase-title">Trusting Internal CA Certificates (SSL)</div>
+      <span class="badge badge-purple">Dockerfile + Rebuild</span>
+    </div>
+    <div class="phase-body">
+      <div class="note note-info">
+        <div class="note-icon">ℹ</div>
+        <div>If the target app uses a self-signed or internal CA certificate, Chrome will reject the connection. Bake the cert into the runner image so it is always trusted — no manual injection needed after restarts.</div>
+      </div>
+
+      <h3 style="margin-top:4px">Permanent fix — bake into image (recommended)</h3>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">On dev machine — pull the cert from the server and place it in the certs folder</div>
+          <pre>scp qa-server:/data/autoab/ocplab-ca.crt packages\runner\certs\ocplab-ca.crt</pre>
+          <div style="margin-top:4px;font-size:11px;color:#64748b;">Any <code>.crt</code> file in <code>packages/runner/certs/</code> is automatically trusted during image build.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Rebuild and transfer the runner image</div>
+          <pre>docker compose -p qa-automation-suite-runner build qaasr-runner
+docker save qaasr-runner:latest -o qaasr-runner-update.tar
+scp qaasr-runner-update.tar qa-server:/data/autoab/qa-automation-suite-runner/</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">On server — load and recreate</div>
+          <pre>sudo docker load -i qaasr-runner-update.tar
+sudo docker-compose -p qa-automation-suite-runner up -d --no-build qaasr-runner</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <div class="step-label">Verify SSL connection works</div>
+          <pre>sudo docker exec qaasr-runner curl -v \
+  "https://airtel6d-in-ventas-master-int-aavm-alpha-01.ocplab.6d.local/" \
+  2>&1 | grep -E "SSL|certificate|Connected"</pre>
+        </div>
+      </div>
+
+      <h3 style="margin-top:8px">Temporary fix — inject into running container (lost on restart)</h3>
+      <div class="step">
+        <div class="step-dot"></div>
+        <div class="step-content">
+          <pre>sudo docker cp /data/autoab/ocplab-ca.crt \
+  qaasr-runner:/usr/local/share/ca-certificates/ocplab-ca.crt
+sudo docker exec qaasr-runner update-ca-certificates</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:32px;padding-top:16px;border-top:1px solid #1e293b;font-size:11px;color:#334155;text-align:center;">
+    QAASR Deployment Guide · Generated 2026-06-27 · Air-Gapped Linux Server · Sixdee Telecom Solutions
+  </div>
+
+</div>
+</body>
+</html>

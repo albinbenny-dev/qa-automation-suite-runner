@@ -203,7 +203,7 @@ export default function TCLibrary() {
     }
     return Array.from(map.entries()).map(([name, tcs], i) => ({
       name,
-      tcs,
+      tcs: [...tcs].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)),
       color: getUcColor(name, i),
     }));
   }, [filteredTCs, useCases]);

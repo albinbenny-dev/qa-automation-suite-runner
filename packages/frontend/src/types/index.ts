@@ -115,6 +115,7 @@ export interface Schedule {
   testCaseIds: string;
   environment: string;
   isActive: boolean;
+  record: boolean;
   emailRecipients: string;
   createdAt: string;
   updatedAt: string;

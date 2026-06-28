@@ -269,16 +269,8 @@ function DetailsTab() {
         </button>
       </div>
 
-      {/* ── Custom AI Instructions ─────────────────────────────────────── */}
-      <div
-        style={{
-          marginTop: '12px',
-          padding: '20px',
-          background: 'var(--surface2)',
-          border: '1px solid rgba(108,99,255,0.25)',
-          borderRadius: '10px',
-        }}
-      >
+      {/* ── Custom AI Instructions (hidden) ───────────────────────────── */}
+      <div style={{ display: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
           <label style={{ ...LABEL_STYLE, marginBottom: 0, color: 'var(--violet)' }}>
             🧠 AI Script Instructions
@@ -2080,8 +2072,6 @@ const TABS = [
   { value: 'details',     label: '🏗 Details' },
   { value: 'environments',label: '🌐 Environments' },
   { value: 'members',     label: '👥 Members' },
-  { value: 'req-library', label: '📁 Req Library' },
-  { value: 'scanner',     label: '🔍 UI Scanner' },
   { value: 'danger',      label: '⚠ Danger Zone' },
 ];
 
@@ -2166,12 +2156,6 @@ export default function ProjectSettings() {
           </Tabs.Content>
           <Tabs.Content value="members">
             <MembersTab />
-          </Tabs.Content>
-          <Tabs.Content value="req-library">
-            <ReqLibraryTab />
-          </Tabs.Content>
-          <Tabs.Content value="scanner">
-            <UIScannerTab />
           </Tabs.Content>
           <Tabs.Content value="danger">
             <DangerZoneTab />

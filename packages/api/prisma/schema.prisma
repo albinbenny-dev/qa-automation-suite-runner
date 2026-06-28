@@ -183,6 +183,7 @@ model Schedule {
   testCaseIds     String   @default("[]")
   environment     String
   isActive        Boolean  @default(true)
+  record          Boolean  @default(true)
   emailRecipients String   @default("[]")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt

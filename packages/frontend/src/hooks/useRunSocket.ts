@@ -106,9 +106,12 @@ export function useRunSocket(): UseRunSocketReturn {
     };
   }, []);
 
-  const joinRun = useCallback((runId: string) => {
+  // Pass forceRunning=true when joining a run we know is PENDING/RUNNING so the
+  // Stop button appears immediately, even if run:start arrives late or was missed.
+  const joinRun = useCallback((runId: string, forceRunning = false) => {
     if (socketRef.current) {
       socketRef.current.emit('joinRun', { runId });
+      if (forceRunning) setStatus('running');
     }
   }, []);
 

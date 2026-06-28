@@ -52,6 +52,19 @@ RUN pip install --no-cache-dir \
     openpyxl \
     pyyaml
 
+# ── Custom CA certificates (e.g. internal OCP/lab environments) ──────────────
+# Drop any *.crt files into packages/runner/certs/ and they will be trusted
+COPY packages/runner/certs/ /usr/local/share/ca-certificates/
+RUN update-ca-certificates
+
+# ── Wrap selenium-manager with --offline so it never tries to reach the internet ─
+# In air-gapped environments the network call to googlechromelabs.github.io
+# times out for ~2 minutes before falling back to the local chromedriver binary.
+RUN SM_PATH=$(python3 -c "import selenium, os; print(os.path.join(os.path.dirname(selenium.__file__), 'webdriver', 'common', 'linux', 'selenium-manager'))") \
+  && mv "$SM_PATH" "${SM_PATH}.real" \
+  && printf '#!/bin/sh\nexec "${0}.real" --offline "$@"\n' > "$SM_PATH" \
+  && chmod +x "$SM_PATH"
+
 # Inject --no-sandbox flags into every Chrome session (required in Docker)
 COPY packages/runner/sitecustomize.py /tmp/sitecustomize.py
 RUN python3 -c "import site; sp=site.getsitepackages(); print(sp[0])" \

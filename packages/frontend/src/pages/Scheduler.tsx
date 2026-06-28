@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Topbar, { TbBtn } from '../components/layout/Topbar';
 import { useRBAC } from '../hooks/useRBAC';
 import {
@@ -19,6 +19,19 @@ import { useProjectStore } from '../stores/projectStore';
 import type { Schedule, Suite, SuiteStage, TestCase, EnvConfig } from '../types';
 import { api } from '../lib/api';
 import type { RunListItem } from '../hooks/useRuns';
+
+// ── Stepper ────────────────────────────────────────────────────────────────
+function Stepper({ value, onChange, min = 1, max = 8 }: {
+  value: number; onChange: (v: number) => void; min?: number; max?: number;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+      <button onClick={() => onChange(Math.max(min, value - 1))} style={{ width: 26, height: 26, borderRadius: '5px 0 0 5px', background: 'var(--surface3)', border: '1px solid var(--border)', color: 'var(--text)', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+      <div style={{ width: 36, height: 26, borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, color: 'var(--text)', background: 'var(--surface2)' }}>{value}</div>
+      <button onClick={() => onChange(Math.min(max, value + 1))} style={{ width: 26, height: 26, borderRadius: '0 5px 5px 0', background: 'var(--surface3)', border: '1px solid var(--border)', color: 'var(--text)', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+    </div>
+  );
+}
 
 // ── Frequency config ───────────────────────────────────────────────────────
 
@@ -438,7 +451,11 @@ function TcLibrarySelector({ testCases, selected, onChange, maxHeight = 340, scr
     }
     return Array.from(map.entries())
       .filter(([, tcs]) => tcs.length > 0)
-      .map(([name, tcs], i) => ({ name, tcs, color: ucColor(name, i) }));
+      .map(([name, tcs], i) => ({
+        name,
+        tcs: [...tcs].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)),
+        color: ucColor(name, i),
+      }));
   }, [filtered]);
 
   useEffect(() => {
@@ -1231,6 +1248,7 @@ interface ScheduleFormState {
   selectedTcIds: string[];
   emailRecipients: string;
   isActive: boolean;
+  record: boolean;
 }
 
 function ScheduleForm({ mode, initial, envConfigs, testCases, suites, scriptedTcIds, onSave, onCancel: _onCancel, isSaving }: {
@@ -1252,6 +1270,7 @@ function ScheduleForm({ mode, initial, envConfigs, testCases, suites, scriptedTc
     selectedTcIds: initial?.selectedTcIds ?? [],
     emailRecipients: initial?.emailRecipients ?? '',
     isActive: initial?.isActive ?? true,
+    record: initial?.record ?? true,
   });
 
   const set = (p: Partial<ScheduleFormState>) => setForm(f => ({ ...f, ...p }));
@@ -1319,6 +1338,16 @@ function ScheduleForm({ mode, initial, envConfigs, testCases, suites, scriptedTc
         </button>
       </div>
 
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>Video Recording</div>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>{form.record ? 'Recording enabled for this schedule' : 'Recording disabled — runs will skip video'}</div>
+        </div>
+        <button type="button" onClick={() => set({ record: !form.record })} style={{ width: 44, height: 24, borderRadius: 100, border: 'none', cursor: 'pointer', background: form.record ? 'var(--cyan)' : 'var(--border)', position: 'relative', transition: 'background 0.2s', flexShrink: 0 }}>
+          <div style={{ position: 'absolute', top: 3, left: form.record ? 22 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.25)' }} />
+        </button>
+      </div>
+
       <button type="submit" disabled={isSaving} style={{ width: '100%', padding: '8px 0', borderRadius: 7, background: 'linear-gradient(90deg,#2A9D8F,#1d7a6c)', border: 'none', color: '#fff', cursor: isSaving ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 700, opacity: isSaving ? 0.7 : 1 }}>
         {isSaving ? 'Saving…' : mode === 'create' ? 'Create Schedule' : 'Save Changes'}
       </button>
@@ -1379,6 +1408,7 @@ export default function Scheduler() {
   const { slug } = useParams<{ slug: string }>();
   const projectId = slug!;
   const { canWrite } = useRBAC();
+  const qc = useQueryClient();
 
   const [mode, setMode] = useState<PageMode>('idle');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1386,6 +1416,22 @@ export default function Scheduler() {
   const [runNowId, setRunNowId] = useState<string | null>(null);
   const [suiteRunNowId, setSuiteRunNowId] = useState<string | null>(null);
   const [suiteDropdownOpen, setSuiteDropdownOpen] = useState(false);
+  const [suiteWorkers, setSuiteWorkers] = useState<number>(() =>
+    parseInt(localStorage.getItem('qa:parallelWorkers') ?? '2', 10)
+  );
+  const [suiteRecord, setSuiteRecord] = useState<boolean>(() =>
+    localStorage.getItem('qa:suiteRecord') !== 'false'
+  );
+  function updateSuiteWorkers(n: number) {
+    setSuiteWorkers(n);
+    localStorage.setItem('qa:parallelWorkers', String(n));
+  }
+  function toggleSuiteRecord() {
+    setSuiteRecord(v => {
+      localStorage.setItem('qa:suiteRecord', String(!v));
+      return !v;
+    });
+  }
   const suiteDropdownRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!suiteDropdownOpen) return;
@@ -1446,7 +1492,7 @@ export default function Scheduler() {
     let emails = '';
     try { tcIds = JSON.parse(editingSchedule.testCaseIds); } catch { /* noop */ }
     try { emails = (JSON.parse(editingSchedule.emailRecipients) as string[]).join(', '); } catch { /* noop */ }
-    return { name: editingSchedule.name, freq: parseCronToFreq(editingSchedule.cronExpression), environment: editingSchedule.environment, selectedTcIds: tcIds, emailRecipients: emails, isActive: editingSchedule.isActive };
+    return { name: editingSchedule.name, freq: parseCronToFreq(editingSchedule.cronExpression), environment: editingSchedule.environment, selectedTcIds: tcIds, emailRecipients: emails, isActive: editingSchedule.isActive, record: editingSchedule.record ?? true };
   }, [editingSchedule]);
 
   const editSuiteInitial = useMemo(() => {
@@ -1461,10 +1507,10 @@ export default function Scheduler() {
     const emailRecipients = formData.emailRecipients.split(',').map(e => e.trim()).filter(Boolean);
     try {
       if (mode === 'create') {
-        await createSchedule({ name: formData.name, cronExpression, testCaseIds: formData.selectedTcIds, environment: formData.environment, isActive: formData.isActive, emailRecipients });
+        await createSchedule({ name: formData.name, cronExpression, testCaseIds: formData.selectedTcIds, environment: formData.environment, isActive: formData.isActive, record: formData.record, emailRecipients });
         toast.success('Schedule created');
       } else if (editingId) {
-        await updateSchedule({ id: editingId, name: formData.name, cronExpression, testCaseIds: formData.selectedTcIds, environment: formData.environment, isActive: formData.isActive, emailRecipients });
+        await updateSchedule({ id: editingId, name: formData.name, cronExpression, testCaseIds: formData.selectedTcIds, environment: formData.environment, isActive: formData.isActive, record: formData.record, emailRecipients });
         toast.success('Schedule updated');
       }
       closeForm();
@@ -1498,7 +1544,8 @@ export default function Scheduler() {
     if (stages.length === 0) { toast.error('This suite has no stages — add use cases to it first'); return; }
     setSuiteRunNowId(suite.id);
     try {
-      await runSuite({ suiteId: suite.id, environment: defaultEnv, name: `${suite.name} — Quick Run` });
+      await runSuite({ suiteId: suite.id, environment: defaultEnv, name: `${suite.name} — Quick Run`, parallelWorkers: suiteWorkers, record: suiteRecord });
+      void qc.invalidateQueries({ queryKey: ['runs', projectId] });
       toast.success('Suite run queued — check Execution for live logs');
     } catch (e) { toast.error((e as Error).message ?? 'Failed to trigger'); }
     finally { setSuiteRunNowId(null); }
@@ -1627,14 +1674,35 @@ export default function Scheduler() {
                   📦 Suites
                   {suites.length > 0 && <span style={{ fontSize: 10, background: 'rgba(42,157,143,0.12)', color: 'var(--pass)', padding: '1px 7px', borderRadius: 100, fontWeight: 700 }}>{suites.length}</span>}
                 </h2>
-                {canWrite && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {/* Worker threads stepper — shared with Execution window via localStorage */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)' }}>Threads</span>
+                    <Stepper value={suiteWorkers} onChange={updateSuiteWorkers} min={1} max={16} />
+                  </div>
+                  {/* Video toggle */}
                   <button
-                    onClick={() => { setMode('suite-create'); setEditingSuiteId(null); setEditingId(null); }}
-                    style={{ padding: '4px 12px', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer', background: 'rgba(42,157,143,0.08)', border: '1px solid rgba(42,157,143,0.2)', color: 'var(--pass)' }}
+                    title={suiteRecord ? 'Video on — click to disable' : 'Video off — click to enable'}
+                    onClick={toggleSuiteRecord}
+                    style={{
+                      padding: '3px 9px', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                      background: suiteRecord ? 'rgba(34,211,238,0.1)' : 'rgba(100,116,139,0.1)',
+                      border: suiteRecord ? '1px solid rgba(34,211,238,0.3)' : '1px solid var(--border)',
+                      color: suiteRecord ? 'var(--cyan)' : 'var(--text-dim)',
+                      display: 'flex', alignItems: 'center', gap: 4,
+                    }}
                   >
-                    + New Suite
+                    {suiteRecord ? '🎬' : '🚫'} <span>Video</span>
                   </button>
-                )}
+                  {canWrite && (
+                    <button
+                      onClick={() => { setMode('suite-create'); setEditingSuiteId(null); setEditingId(null); }}
+                      style={{ padding: '4px 12px', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer', background: 'rgba(42,157,143,0.08)', border: '1px solid rgba(42,157,143,0.2)', color: 'var(--pass)' }}
+                    >
+                      + New Suite
+                    </button>
+                  )}
+                </div>
               </div>
 
               {suitesLoading ? (

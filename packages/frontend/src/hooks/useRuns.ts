@@ -57,7 +57,7 @@ export function useRuns(projectId: string | undefined, page = 1) {
     refetchInterval: (query) => {
       const runs = query.state.data?.runs ?? [];
       const hasActive = runs.some(r => r.status === 'PENDING' || r.status === 'RUNNING');
-      return hasActive ? 1500 : 5000;
+      return hasActive ? 1500 : 2000;
     },
   });
 }
@@ -178,6 +178,7 @@ export function useCreateSchedule(projectId: string) {
       testCaseIds: string[];
       environment: string;
       isActive?: boolean;
+      record?: boolean;
       emailRecipients?: string[];
     }) => {
       const res = await api.post<{ schedule: Schedule }>(`/projects/${projectId}/runs/schedules`, data);
@@ -196,6 +197,7 @@ export interface UpdateSchedulePayload {
   testCaseIds?: string[];
   environment?: string;
   isActive?: boolean;
+  record?: boolean;
   emailRecipients?: string[];
 }
 

@@ -37,6 +37,7 @@ const CreateScheduleSchema = z.object({
   testCaseIds: z.array(z.string()).min(1),
   environment: z.string().min(1),
   isActive: z.boolean().default(true),
+  record: z.boolean().default(true),
   emailRecipients: z.array(z.string().email()).default([]),
 });
 
@@ -176,7 +177,7 @@ router.post('/schedules', async (req: Request, res: Response, next: NextFunction
       res.status(400).json({ error: 'Validation failed', issues: parsed.error.issues });
       return;
     }
-    const { name, cronExpression, testCaseIds, environment, isActive, emailRecipients } = parsed.data;
+    const { name, cronExpression, testCaseIds, environment, isActive, record, emailRecipients } = parsed.data;
 
     const schedule = await prisma.schedule.create({
       data: {
@@ -186,6 +187,7 @@ router.post('/schedules', async (req: Request, res: Response, next: NextFunction
         testCaseIds: JSON.stringify(testCaseIds),
         environment,
         isActive,
+        record,
         emailRecipients: JSON.stringify(emailRecipients),
       },
     });
@@ -198,6 +200,7 @@ router.post('/schedules', async (req: Request, res: Response, next: NextFunction
         cronExpression: schedule.cronExpression,
         testCaseIds: schedule.testCaseIds,
         environment: schedule.environment,
+        record: schedule.record,
       });
     }
 
@@ -225,6 +228,7 @@ router.put('/schedules/:id', async (req: Request, res: Response, next: NextFunct
         ...(parsed.data.testCaseIds !== undefined && { testCaseIds: JSON.stringify(parsed.data.testCaseIds) }),
         ...(parsed.data.environment !== undefined && { environment: parsed.data.environment }),
         ...(parsed.data.isActive !== undefined && { isActive: parsed.data.isActive }),
+        ...(parsed.data.record !== undefined && { record: parsed.data.record }),
         ...(parsed.data.emailRecipients !== undefined && { emailRecipients: JSON.stringify(parsed.data.emailRecipients) }),
       },
     });
@@ -238,6 +242,7 @@ router.put('/schedules/:id', async (req: Request, res: Response, next: NextFunct
         cronExpression: updated.cronExpression,
         testCaseIds: updated.testCaseIds,
         environment: updated.environment,
+        record: updated.record,
       });
     }
 

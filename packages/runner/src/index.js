@@ -9,13 +9,22 @@ const path = require('path');
 const PORT = 5001;
 const SCRIPTS_DIR = '/scripts';
 
-// ── noVNC / live-browser-view constants ────────────────────────────────────
+// ── Display pool ───────────────────────────────────────────────────────────
+// One Xvfb display per concurrent worker slot. Display :99 is also the VNC
+// display (noVNC live view). All displays are started on boot; each /run
+// request acquires one exclusively, so parallel test cases each record their
+// own screen without contention.
+const MAX_DISPLAYS   = 8;   // supports up to 8 parallel workers
+const BASE_DISPLAY   = 99;  // :99, :100, :101, …
 const VNC_DISPLAY    = ':99';
 const VNC_PORT       = 5900;
 const NOVNC_PORT     = 6080;
 const NOVNC_WEB_DIR  = '/usr/share/novnc';
 
-// Poll a TCP port until something is listening, then call onReady.
+// Pool entry: { display: ':99', xvfbProc, free: true, ffmpegProc: null }
+const displayPool = [];
+
+// ── Helpers ────────────────────────────────────────────────────────────────
 function waitForPort(port, onReady) {
   const attempt = () => {
     const sock = new net.Socket();
@@ -28,7 +37,6 @@ function waitForPort(port, onReady) {
   attempt();
 }
 
-// One-shot port check — resolves true if something is listening, false if not.
 function checkPort(port) {
   return new Promise((resolve) => {
     const sock = new net.Socket();
@@ -40,7 +48,6 @@ function checkPort(port) {
   });
 }
 
-// Spawn a process and pipe its stdout/stderr into the container logs.
 function spawnLogged(cmd, args, opts = {}) {
   const p = spawn(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
   p.stdout.on('data', (d) => process.stdout.write(`[${cmd}] ${d}`));
@@ -50,7 +57,6 @@ function spawnLogged(cmd, args, opts = {}) {
   return p;
 }
 
-// Poll until Xvfb's Unix socket exists.
 function waitForXvfb(display, onReady) {
   const num    = display.replace(':', '');
   const socket = `/tmp/.X11-unix/X${num}`;
@@ -65,18 +71,56 @@ function waitForXvfb(display, onReady) {
   poll();
 }
 
-// Idempotent VNC stack startup.
+// ── Acquire / release display from pool ───────────────────────────────────
+function acquireDisplay() {
+  const slot = displayPool.find((d) => d.free);
+  if (!slot) return null;
+  slot.free = false;
+  return slot;
+}
+
+function releaseDisplay(slot) {
+  if (!slot) return;
+  // Kill any stale ffmpeg on this slot before marking it free
+  if (slot.ffmpegProc) {
+    try { slot.ffmpegProc.kill('SIGKILL'); } catch {}
+    slot.ffmpegProc = null;
+  }
+  slot.free = true;
+}
+
+// ── Boot all Xvfb displays in the pool ────────────────────────────────────
+async function startDisplayPool() {
+  for (let i = 0; i < MAX_DISPLAYS; i++) {
+    const displayNum = BASE_DISPLAY + i;
+    const display    = `:${displayNum}`;
+    const socket     = `/tmp/.X11-unix/X${displayNum}`;
+
+    let xvfbProc = null;
+    if (fs.existsSync(socket)) {
+      console.log(`[qa-runner] Xvfb ${display} already running — reusing`);
+    } else {
+      console.log(`[qa-runner] Starting Xvfb on display ${display}`);
+      xvfbProc = spawnLogged('Xvfb', [display, '-screen', '0', '1280x900x24', '-ac', '+extension', 'GLX', '+render', '-noreset']);
+      await new Promise((resolve) => waitForXvfb(display, resolve));
+    }
+
+    // Start openbox window manager — Chrome needs a WM for CDP to work.
+    // Pass DISPLAY via env (same way start.sh does) rather than --display flag.
+    const obEnv = Object.assign({}, process.env, { DISPLAY: display });
+    spawn('openbox', [], { env: obEnv, stdio: ['ignore', 'ignore', 'ignore'] });
+    // Give openbox time to connect to the display before Chrome uses it
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    displayPool.push({ display, xvfbProc, free: true, ffmpegProc: null });
+    console.log(`[qa-runner] Display ${display} ready`);
+  }
+  console.log(`[qa-runner] Display pool ready: ${displayPool.map((d) => d.display).join(', ')}`);
+}
+
+// ── VNC stack (only on display :99) ───────────────────────────────────────
 async function startVncStack() {
   console.log('[qa-runner] Checking VNC stack on display ' + VNC_DISPLAY);
-
-  const xvfbSocket = `/tmp/.X11-unix/X${VNC_DISPLAY.replace(':', '')}`;
-  if (fs.existsSync(xvfbSocket)) {
-    console.log(`[qa-runner] Xvfb socket already present (${xvfbSocket}) — skipping Xvfb start`);
-  } else {
-    console.log('[qa-runner] Starting Xvfb on display ' + VNC_DISPLAY);
-    spawnLogged('Xvfb', [VNC_DISPLAY, '-screen', '0', '1920x1080x24', '-ac']);
-    await new Promise((resolve) => waitForXvfb(VNC_DISPLAY, resolve));
-  }
 
   const vncAlive = await checkPort(VNC_PORT);
   if (vncAlive) {
@@ -97,9 +141,7 @@ async function startVncStack() {
   }
 
   const wsAlive = await checkPort(NOVNC_PORT);
-  if (wsAlive) {
-    console.log(`[qa-runner] websockify already listening on :${NOVNC_PORT} — skipping`);
-  } else {
+  if (!wsAlive) {
     if (!fs.existsSync(NOVNC_WEB_DIR)) {
       console.error(`[qa-runner] noVNC web dir not found at ${NOVNC_WEB_DIR}`);
       return;
@@ -124,12 +166,9 @@ async function startVncStack() {
         console.log('[qa-runner] [watchdog] x11vnc down — restarting');
         spawnLogged('x11vnc', [
           '-display', VNC_DISPLAY,
-          '-nopw',
-          '-listen', 'localhost',
+          '-nopw', '-listen', 'localhost',
           '-rfbport', String(VNC_PORT),
-          '-forever',
-          '-shared',
-          '-noxdamage',
+          '-forever', '-shared', '-noxdamage',
         ]);
         await new Promise((resolve) => waitForPort(VNC_PORT, resolve));
         console.log('[qa-runner] [watchdog] x11vnc restarted');
@@ -151,12 +190,6 @@ async function startVncStack() {
   }, 20_000);
 }
 
-// ── Per-display recording lock ─────────────────────────────────────────────
-// Tracks whether ffmpeg is currently recording the Xvfb display.
-// Only one recording can run at a time per display. Concurrent runs that
-// request recording get a warning but still execute without video.
-let recordingActive = false;
-
 // Robot Framework binary
 const ROBOT_BIN = fs.existsSync('/usr/local/bin/robot')
   ? '/usr/local/bin/robot'
@@ -165,96 +198,67 @@ const ROBOT_BIN = fs.existsSync('/usr/local/bin/robot')
 // ── RF XML report parser ───────────────────────────────────────────────────
 function decodeXmlEntities(str) {
   return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g,  '&')
+    .replace(/&lt;/g,   '<')
+    .replace(/&gt;/g,   '>')
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'");
 }
 
 function parseRobotXmlReport(xmlPath) {
-  if (!fs.existsSync(xmlPath)) return null;
-  const xml = fs.readFileSync(xmlPath, 'utf8');
+  try {
+    if (!fs.existsSync(xmlPath)) return null;
+    const xml = fs.readFileSync(xmlPath, 'utf8');
 
-  const suiteMatch = xml.match(/<suite[^>]*>[\s\S]*?<status\s+status="(PASS|FAIL)"[^>]*start="([^"]*)"[^>]*end="([^"]*)"[^/]*/);
-  const suiteStatus = suiteMatch ? suiteMatch[1] : 'FAIL';
+    const statsMatch = xml.match(/<stat[^>]+type="total"[^>]*>(\d+)<\/stat>/);
+    const suiteMatch = xml.match(/<suite\s[^>]*name="([^"]+)"/);
 
-  const tests = [];
-  const testBlockRegex = /<test\s[^>]*>([\s\S]*?)<\/test>/g;
-  let m;
-  while ((m = testBlockRegex.exec(xml)) !== null) {
-    const block = m[0];
-    const body = m[1];
-
-    const nameMatch = block.match(/<test\s[^>]*\bname="([^"]*)"/);
-    if (!nameMatch) continue;
-    const name = decodeXmlEntities(nameMatch[1]);
-
-    const statusMatch = body.match(/<status\s+status="(PASS|FAIL)"[^>]*(?:start(?:time)?="([^"]*)")?[^>]*(?:end(?:time)?="([^"]*)")?/);
-    const status = statusMatch ? statusMatch[1] : 'FAIL';
-    const startStr = statusMatch ? statusMatch[2] : null;
-    const endStr = statusMatch ? statusMatch[3] : null;
-
-    let durationMs = 0;
-    if (startStr && endStr) {
+    const tests = [];
+    const testRe = /<test\s[^>]*name="([^"]+)"[\s\S]*?<status\s[^>]*status="(PASS|FAIL)"[^>]*(?:starttime="([^"]*)")?[^>]*(?:endtime="([^"]*)")?[^>]*(?:>([^<]*)<\/status>|\/?>)/g;
+    let m;
+    while ((m = testRe.exec(xml)) !== null) {
+      const name      = decodeXmlEntities(m[1]);
+      const status    = m[2];
+      const startStr  = m[3] || '';
+      const endStr    = m[4] || '';
+      const message   = m[5] ? decodeXmlEntities(m[5].trim()) : '';
+      let durationMs  = 0;
       try { durationMs = new Date(endStr).getTime() - new Date(startStr).getTime(); } catch { /* ignore */ }
+      tests.push({ name, status, durationMs: isNaN(durationMs) ? 0 : durationMs, message });
     }
 
-    let errorMsg = null;
-    if (status === 'FAIL') {
-      const statusTextMatch = body.match(/<status\s+status="FAIL"[^>]*>([\s\S]*?)<\/status>/);
-      if (statusTextMatch) {
-        const txt = decodeXmlEntities(statusTextMatch[1]).replace(/<[^>]+>/g, '').trim();
-        if (txt) errorMsg = txt;
-      }
-      if (!errorMsg) {
-        const msgRegex = /<msg[^>]*\blevel="FAIL"[^>]*>([\s\S]*?)<\/msg>/g;
-        let mm;
-        let lastMsg = null;
-        while ((mm = msgRegex.exec(body)) !== null) lastMsg = mm[1];
-        if (lastMsg) errorMsg = decodeXmlEntities(lastMsg).replace(/<[^>]+>/g, '').trim();
-      }
-      if (errorMsg && errorMsg.length > 600) errorMsg = errorMsg.slice(0, 600) + '…';
-    }
+    const passed = tests.filter((t) => t.status === 'PASS').length;
+    const failed = tests.filter((t) => t.status === 'FAIL').length;
 
-    tests.push({ name, status, durationMs, errorMsg });
-  }
-
-  return {
-    _robotReport: true,
-    suiteStatus,
-    tests,
-    stats: {
+    return {
+      _robotReport: true,
+      suiteName: suiteMatch ? decodeXmlEntities(suiteMatch[1]) : null,
       total: tests.length,
-      passed: tests.filter(t => t.status === 'PASS').length,
-      failed: tests.filter(t => t.status === 'FAIL').length,
-    },
-  };
+      passed,
+      failed,
+      tests: tests.map((t) => ({ ...t, errorMsg: t.message || null })),
+    };
+  } catch (err) {
+    console.error(`[qa-runner] XML parse error: ${err.message}`);
+    return null;
+  }
 }
 
-function collectBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
-  });
-}
-
+// ── HTTP server ────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
-  // GET /health
   if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('OK');
+    const free = displayPool.filter((d) => d.free).length;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', freeDisplays: free, totalDisplays: displayPool.length }));
     return;
   }
 
-  // POST /run
   if (req.method === 'POST' && req.url === '/run') {
     let body;
     try {
-      const raw = await collectBody(req);
-      body = JSON.parse(raw);
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     } catch (err) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid JSON body: ' + err.message }));
@@ -287,13 +291,22 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // ── Acquire a display slot ─────────────────────────────────────────────
+    const displaySlot = acquireDisplay();
+    if (!displaySlot) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'All display slots busy — too many parallel workers' }));
+      return;
+    }
+    const assignedDisplay = displaySlot.display;
+
     res.writeHead(200, {
       'Content-Type': 'application/x-ndjson',
       'Transfer-Encoding': 'chunked',
     });
 
     const sendLine = (obj) => {
-      res.write(JSON.stringify(obj) + '\n');
+      try { res.write(JSON.stringify(obj) + '\n'); } catch { /* client gone */ }
     };
 
     const handleChunk = (chunk) => {
@@ -308,21 +321,20 @@ const server = http.createServer(async (req, res) => {
     let proc;
     let procDone = false;
 
-    // ── Robot Framework + SeleniumLibrary execution ────────────────────────
-    const scriptDir = path.dirname(scriptPath);
+    // ── Script / project resolution ────────────────────────────────────────
+    const scriptDir    = path.dirname(scriptPath);
     const relToScripts = path.relative(SCRIPTS_DIR, scriptPath);
-    const projectSlug = bodyProjectSlug || relToScripts.split(path.sep)[0];
-    const projectRoot = path.join(SCRIPTS_DIR, projectSlug);
+    const projectSlug  = bodyProjectSlug || relToScripts.split(path.sep)[0];
+    const projectRoot  = path.join(SCRIPTS_DIR, projectSlug);
     const pageObjectsDir = path.join(projectRoot, 'Resource', 'PageObjects');
-    const hasHierarchy = fs.existsSync(path.join(projectRoot, 'Resource'));
+    const hasHierarchy   = fs.existsSync(path.join(projectRoot, 'Resource'));
 
     if (!hasHierarchy) {
-      // Copy resource files alongside the script for RF to resolve relative imports
       const slugResourcesDir = projectSlug
         ? path.join(SCRIPTS_DIR, projectSlug, 'resources')
         : null;
       const cuidResourcesDir = path.join(SCRIPTS_DIR, path.basename(scriptDir), 'resources');
-      const resourcesSrcDir = (slugResourcesDir && fs.existsSync(slugResourcesDir))
+      const resourcesSrcDir  = (slugResourcesDir && fs.existsSync(slugResourcesDir))
         ? slugResourcesDir
         : (fs.existsSync(cuidResourcesDir) ? cuidResourcesDir : null);
 
@@ -343,7 +355,7 @@ const server = http.createServer(async (req, res) => {
     fs.mkdirSync(effectiveOutputDir, { recursive: true });
     const xmlOutputPath = path.join(effectiveOutputDir, 'output.xml');
 
-    // RF listener for auto-screenshot via SeleniumLibrary
+    // RF listener for auto-screenshot on teardown
     const listenerCode = [
       'import os as _os',
       '',
@@ -371,14 +383,13 @@ const server = http.createServer(async (req, res) => {
     const listenerPath = path.join(effectiveOutputDir, 'QaRunnerListener.py');
     try { fs.writeFileSync(listenerPath, listenerCode, 'utf8'); } catch { /* non-fatal */ }
 
-    // Map browser name to SeleniumLibrary browser name
-    const seleniumBrowser = browser === 'chrome' ? 'chrome' : 'firefox';
+    const seleniumBrowser = (browser === 'chrome' || browser === 'chromium') ? 'chrome' : 'firefox';
 
     const robotArgs = [
       '--outputdir', effectiveOutputDir,
-      '--output', 'output.xml',
-      '--report', 'NONE',
-      '--log', 'log.html',
+      '--output',   'output.xml',
+      '--report',   'NONE',
+      '--log',      'log.html',
       '--listener', `${listenerPath}:${effectiveOutputDir}`,
       '--variable', `BASE_URL:${baseUrl || ''}`,
       '--variable', `TC_USERNAME:${username || ''}`,
@@ -392,80 +403,72 @@ const server = http.createServer(async (req, res) => {
     if (hasHierarchy && fs.existsSync(pageObjectsDir)) {
       robotArgs.push('--pythonpath', pageObjectsDir);
     }
-
     robotArgs.push(scriptPath);
 
     const robotEnv = Object.assign({}, process.env, {
-      BASE_URL: baseUrl || '',
+      BASE_URL:    baseUrl || '',
       TC_USERNAME: username || '',
       TC_PASSWORD: password || '',
-      TEST_ENV: environment || '',
-      DISPLAY: VNC_DISPLAY,
+      TEST_ENV:    environment || '',
+      DISPLAY:     assignedDisplay,   // ← each worker uses its own display
     });
 
     if (hasHierarchy && fs.existsSync(pageObjectsDir)) {
       robotEnv.PYTHONPATH = [pageObjectsDir, process.env.PYTHONPATH || ''].filter(Boolean).join(':');
     }
 
-    // Use the pre-existing Xvfb display — do NOT wrap with xvfb-run as it
-    // creates a new display that breaks Chrome's CDP Runtime.evaluate
-    const spawnCmd = ROBOT_BIN;
-    const spawnArgs = [...robotArgs];
-
-    // ── Video recording ────────────────────────────────────────────────────
-    let ffmpegProc = null;
-    let videoPath = null;
+    // ── Video recording on the assigned display ────────────────────────────
+    let ffmpegProc  = null;
+    let videoPath   = null;
     let thisRunRecords = false;
 
     if (record) {
-      if (recordingActive) {
-        sendLine({ type: 'warning', text: '[runner] ⚠ Video recording unavailable — another test is already recording on this display. Execution will continue without video.' });
-      } else {
-        recordingActive = true;
-        thisRunRecords = true;
-        videoPath = path.join(effectiveOutputDir, 'video.mp4');
-        ffmpegProc = spawn('ffmpeg', [
-          '-y',
-          '-video_size', '1280x900',
-          '-framerate', '10',
-          '-f', 'x11grab',
-          '-i', VNC_DISPLAY,
-          '-codec:v', 'libx264',
-          '-preset', 'fast',
-          '-crf', '32',
-          '-tune', 'stillimage',
-          '-pix_fmt', 'yuv420p',
-          videoPath,
-        ], { stdio: ['pipe', 'pipe', 'pipe'] });
-        let ffmpegStarted = false;
-        ffmpegProc.stderr.on('data', (d) => {
-          const msg = d.toString();
-          if (!ffmpegStarted && msg.includes('frame=')) { ffmpegStarted = true; }
-          if (/error|invalid|failed/i.test(msg) && !msg.includes('Last message')) {
-            sendLine({ type: 'log', text: `[ffmpeg] ${msg.trim().slice(0, 200)}` });
-          }
-        });
-        ffmpegProc.on('error', (err) => {
-          console.error(`[qa-runner] ffmpeg error: ${err.message}`);
-          sendLine({ type: 'log', text: `[runner] ⚠ ffmpeg failed to start: ${err.message}` });
-          recordingActive = false;
-          thisRunRecords = false;
-          videoPath = null;
-        });
-        ffmpegProc.on('exit', (code) => {
-          if (code !== 0 && code !== null && thisRunRecords) {
-            sendLine({ type: 'log', text: `[runner] ⚠ ffmpeg exited with code ${code} — video may be missing` });
-          }
-        });
-        sendLine({ type: 'log', text: '[runner] 🎬 Video recording started (1280x900 10fps)' });
-      }
+      thisRunRecords = true;
+      videoPath      = path.join(effectiveOutputDir, 'video.mp4');
+
+      ffmpegProc = spawn('ffmpeg', [
+        '-y',
+        '-video_size', '1280x900',
+        '-framerate', '10',
+        '-f', 'x11grab',
+        '-i', assignedDisplay,        // ← record THIS worker's display only
+        '-codec:v', 'libx264',
+        '-preset', 'fast',
+        '-crf', '32',
+        '-tune', 'stillimage',
+        '-pix_fmt', 'yuv420p',
+        videoPath,
+      ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+      displaySlot.ffmpegProc = ffmpegProc;
+
+      ffmpegProc.stderr.on('data', (d) => {
+        const msg = d.toString();
+        if (/error|invalid|failed/i.test(msg) && !msg.includes('Last message')) {
+          sendLine({ type: 'log', text: `[ffmpeg] ${msg.trim().slice(0, 200)}` });
+        }
+      });
+      ffmpegProc.on('error', (err) => {
+        console.error(`[qa-runner] ffmpeg error on ${assignedDisplay}: ${err.message}`);
+        sendLine({ type: 'log', text: `[runner] ⚠ ffmpeg failed to start: ${err.message}` });
+        thisRunRecords = false;
+        videoPath      = null;
+        displaySlot.ffmpegProc = null;
+      });
+      ffmpegProc.on('exit', (code) => {
+        displaySlot.ffmpegProc = null;
+        if (code !== 0 && code !== null && thisRunRecords) {
+          sendLine({ type: 'log', text: `[runner] ⚠ ffmpeg exited with code ${code} — video may be missing` });
+        }
+      });
+      sendLine({ type: 'log', text: `[runner] 🎬 Video recording started on display ${assignedDisplay} (1280x900 10fps)` });
     }
 
-    sendLine({ type: 'log', text: `[runner] Starting Robot Framework (${seleniumBrowser}) headless=${headless}` });
+    sendLine({ type: 'log', text: `[runner] Starting Robot Framework (${seleniumBrowser}) headless=${headless} display=${assignedDisplay}` });
 
-    proc = spawn(spawnCmd, spawnArgs, {
-      cwd: scriptDir,
-      env: robotEnv,
+    proc = spawn(ROBOT_BIN, robotArgs, {
+      cwd:   scriptDir,
+      env:   robotEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -479,13 +482,23 @@ const server = http.createServer(async (req, res) => {
       if (!procDone) sendLine({ type: 'heartbeat' });
     }, 20_000);
 
+    // Release display when connection drops (cancel/stop) — only if proc hasn't
+    // already finished (proc.on('close') handles the normal completion path).
+    let displayReleased = false;
+    const releaseOnce = () => {
+      if (displayReleased) return;
+      displayReleased = true;
+      releaseDisplay(displaySlot);
+    };
+
     req.on('close', () => {
       if (!procDone && !proc.killed) {
         proc.kill('SIGTERM');
         setTimeout(() => { if (!proc.killed) proc.kill('SIGKILL'); }, 3000);
+        clearTimeout(killTimer);
+        clearInterval(heartbeatTimer);
+        releaseOnce();
       }
-      clearTimeout(killTimer);
-      clearInterval(heartbeatTimer);
     });
 
     const outputLines = [];
@@ -505,16 +518,15 @@ const server = http.createServer(async (req, res) => {
       clearTimeout(killTimer);
       clearInterval(heartbeatTimer);
 
-      // ── Stop ffmpeg, then remux to faststart in background ──────────────────
-      // We stop recording without blocking the run, then run a quick copy-remux
-      // to move the moov atom to the front so browsers can play inline.
+      // ── Stop ffmpeg and remux for browser playback ─────────────────────
       if (ffmpegProc && thisRunRecords) {
         const rawPath  = videoPath;
         const fastPath = rawPath ? rawPath.replace('.mp4', '_fast.mp4') : null;
-        ffmpegProc.on('exit', () => {
-          recordingActive = false;
+        const ffmpegToStop = ffmpegProc;
+        displaySlot.ffmpegProc = null;
+
+        ffmpegToStop.on('exit', () => {
           if (!rawPath || !fastPath) return;
-          // Remux raw recording → faststart copy (moov atom at front for browser playback)
           const remux = spawn('ffmpeg', [
             '-y', '-i', rawPath,
             '-movflags', '+faststart',
@@ -529,12 +541,15 @@ const server = http.createServer(async (req, res) => {
             }
           });
         });
-        ffmpegProc.on('error', () => { recordingActive = false; });
-        try { ffmpegProc.kill('SIGTERM'); } catch { try { ffmpegProc.kill('SIGKILL'); } catch {} }
-        setTimeout(() => { try { ffmpegProc.kill('SIGKILL'); } catch {} }, 8_000);
+        try { ffmpegToStop.kill('SIGTERM'); } catch { try { ffmpegToStop.kill('SIGKILL'); } catch {} }
+        setTimeout(() => { try { ffmpegToStop.kill('SIGKILL'); } catch {} }, 8_000);
         sendLine({ type: 'log', text: '[runner] 🎬 Video recording stopped — processing for playback…' });
       }
 
+      // Release display back to pool
+      releaseOnce();
+
+      // ── Collect artifacts ──────────────────────────────────────────────
       const reportData = parseRobotXmlReport(xmlOutputPath);
       const errorLines = outputLines.filter(l => /FAIL|Error|Exception|Critical/i.test(l)).slice(-5).join(' | ');
 
@@ -562,7 +577,7 @@ const server = http.createServer(async (req, res) => {
     proc.on('error', (err) => {
       clearTimeout(killTimer);
       clearInterval(heartbeatTimer);
-      if (thisRunRecords) { try { ffmpegProc?.kill('SIGKILL'); } catch {} recordingActive = false; }
+      releaseOnce();
       sendLine({ type: 'done', exitCode: 1, reportData: null, error: err.message });
       res.end();
     });
@@ -575,8 +590,9 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`[qa-runner] HTTP server listening on port ${PORT}`);
   console.log(`[qa-runner] Robot Framework binary: ${ROBOT_BIN} (exists: ${fs.existsSync(ROBOT_BIN)})`);
-  startVncStack();
+  await startDisplayPool();
+  await startVncStack();
 });

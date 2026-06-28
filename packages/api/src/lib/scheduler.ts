@@ -26,6 +26,7 @@ interface ScheduleRow {
   cronExpression: string;
   testCaseIds: string;
   environment: string;
+  record?: boolean;
   project?: { baseUrl?: string | null } | null;
 }
 
@@ -92,6 +93,7 @@ export function registerSchedule(schedule: ScheduleRow): void {
         headless: true,
         browser: 'chromium',
         triggerType: 'SCHEDULED',
+        record: schedule.record !== false,
       });
     } catch (err) {
       console.error(`[scheduler] Error firing schedule ${schedule.id}:`, err);

@@ -14,6 +14,20 @@ interface RFReport {
   tests?: Array<{ name: string; status: 'PASS' | 'FAIL'; durationMs: number; errorMsg: string | null }>;
 }
 
+// ── Semaphore — limits total concurrent TC executions across all stages ────
+class Semaphore {
+  private permits: number;
+  private queue: Array<() => void> = [];
+  constructor(permits: number) { this.permits = permits; }
+  acquire(): Promise<void> {
+    if (this.permits > 0) { this.permits--; return Promise.resolve(); }
+    return new Promise<void>((resolve) => this.queue.push(resolve));
+  }
+  release(): void {
+    if (this.queue.length > 0) { this.queue.shift()!(); } else { this.permits++; }
+  }
+}
+
 // ── Main job processor ─────────────────────────────────────────────────────
 async function processRunJob(job: Job<RunJobPayload>): Promise<void> {
   const { runId, runSeq, projectId, testCaseIds, scriptPaths, skippedTcIds = [],
@@ -226,35 +240,80 @@ async function processRunJob(job: Job<RunJobPayload>): Promise<void> {
 
   // ── 5. Execute scripts — stage-aware or flat sequential ─────────────────
   if (stages && stages.length > 0) {
-    // Stage-based execution: each stage runs after the previous one completes.
-    // Within a stage: sequential mode = one-by-one, parallel mode = all at once.
-    let globalIndex = 0;
-    for (const stage of stages) {
-      if (runAbortController.signal.aborted) break;
-      const stageLabel = stage.mode === 'parallel'
-        ? `⚡ Stage [${stage.useCaseTag}] — ${stage.testCaseIds.length} TCs parallel`
-        : `→ Stage [${stage.useCaseTag}] — ${stage.testCaseIds.length} TCs sequential`;
-      emitLog(runId, 'info', stageLabel);
+    // Execution model:
+    //
+    // SEQUENTIAL stages share a single pipeline slot — they run one after the
+    // other in suite order.  Stage-3 (seq) only starts once Stage-1 (seq)
+    // fully completes.
+    //
+    // PARALLEL stages each become an independent actor that competes for any
+    // free worker slot.
+    //
+    // parallelWorkers = total concurrent slots shared by all actors.
+    //
+    // Example — workers=2, [Approval(seq), CustomerMgmt(par), E2E(seq), POS(par)]:
+    //   Slot 1 → sequential pipeline: Approval(all TCs) → E2E(all TCs)
+    //   Slot 2 → parallel actor:      CustomerMgmt(all TCs) → POS(all TCs)
+    //
+    // Example — workers=3:
+    //   Slot 1 → sequential pipeline: Approval → E2E
+    //   Slot 2 → CustomerMgmt
+    //   Slot 3 → POS    (both parallel actors start immediately)
 
-      if (stage.mode === 'parallel') {
-        await Promise.all(
-          stage.testCaseIds.map((tcId, idx) =>
-            executeScript(tcId, stage.scriptPaths[idx], globalIndex + idx),
-          ),
-        );
-        globalIndex += stage.testCaseIds.length;
-      } else {
-        for (let idx = 0; idx < stage.testCaseIds.length; idx++) {
-          if (runAbortController.signal.aborted) break;
-          await executeScript(stage.testCaseIds[idx], stage.scriptPaths[idx], globalIndex + idx);
-          if (runAbortController.signal.aborted) {
-            emitLog(runId, 'warn', '■ Run cancelled during script execution');
-            break;
-          }
+    // Pre-compute globalIndex offsets for every stage
+    let globalIndex = 0;
+    const stageOffsets = stages.map((stage) => {
+      const offset = globalIndex;
+      globalIndex += stage.testCaseIds.length;
+      return offset;
+    });
+
+    // Helper: run all TCs in one stage sequentially
+    async function runStageSequential(stage: typeof stages[0], offset: number) {
+      for (let idx = 0; idx < stage.testCaseIds.length; idx++) {
+        if (runAbortController.signal.aborted) break;
+        await executeScript(stage.testCaseIds[idx], stage.scriptPaths[idx], offset + idx);
+        if (runAbortController.signal.aborted) {
+          emitLog(runId, 'warn', '■ Run cancelled during script execution');
+          break;
         }
-        globalIndex += stage.testCaseIds.length;
       }
     }
+
+    // Build actors
+    const actors: Array<() => Promise<void>> = [];
+
+    // Actor 1: sequential pipeline — all seq stages in suite order, one slot
+    const seqStages = stages.filter((s) => s.mode === 'sequential');
+    if (seqStages.length > 0) {
+      actors.push(async () => {
+        for (const stage of seqStages) {
+          if (runAbortController.signal.aborted) break;
+          const offset = stageOffsets[stages.indexOf(stage)];
+          emitLog(runId, 'info', `→ [SEQ] Stage [${stage.useCaseTag}] — ${stage.testCaseIds.length} TCs`);
+          await runStageSequential(stage, offset);
+        }
+      });
+    }
+
+    // Actors 2…N: one actor per parallel stage
+    for (const stage of stages.filter((s) => s.mode === 'parallel')) {
+      const offset = stageOffsets[stages.indexOf(stage)];
+      actors.push(async () => {
+        if (runAbortController.signal.aborted) return;
+        emitLog(runId, 'info', `⚡ [PAR] Stage [${stage.useCaseTag}] — ${stage.testCaseIds.length} TCs`);
+        await runStageSequential(stage, offset);
+      });
+    }
+
+    // Run actors with a semaphore capping total concurrent slots
+    const sem = new Semaphore(parallelWorkers);
+    await Promise.all(
+      actors.map(async (actor) => {
+        await sem.acquire();
+        try { await actor(); } finally { sem.release(); }
+      }),
+    );
   } else {
     // Flat sequential execution (non-suite runs)
     for (let i = 0; i < scriptPaths.length; i++) {

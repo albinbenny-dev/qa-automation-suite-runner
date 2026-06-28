@@ -84,6 +84,7 @@ services:
       - qaasr-data:/data
       - qaasr-scripts:/scripts
       - qaasr-artifacts:/artifacts
+      - ./packages/api/src:/app/packages/api/src:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
       interval: 15s
@@ -104,7 +105,6 @@ services:
     environment:
       - TZ=Asia/Kolkata
       - API_URL=http://qaasr-api:4000
-      - SE_AVOID_STATS=true
     depends_on:
       qaasr-api:
         condition: service_healthy
@@ -113,8 +113,6 @@ services:
     volumes:
       - qaasr-scripts:/scripts
       - qaasr-artifacts:/artifacts
-    extra_hosts:
-      - "airtel6d-in-ventas-master-int-aavm-alpha-01.ocplab.6d.local:10.0.12.244"
     networks:
       - qaasr-net
 

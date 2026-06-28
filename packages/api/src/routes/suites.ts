@@ -28,7 +28,8 @@ const RunSuiteSchema = z.object({
   environment:     z.string().min(1),
   parallelWorkers: z.number().int().min(1).max(8).default(2),
   headless:        z.boolean().default(true),
-  browser:         z.enum(['chromium', 'firefox', 'webkit']).default('chromium'),
+  browser:         z.enum(['chrome', 'firefox']).default('chrome'),
+  record:          z.boolean().default(true),
   /** Optional override for the run name shown in the UI */
   name:            z.string().max(200).optional(),
 });
@@ -54,10 +55,12 @@ async function resolveScriptPaths(
   return scripts
     .filter((s): s is typeof s & { testCaseId: string } => s.testCaseId !== null)
     .map((s) => {
-      const cuidPath = `${SCRIPTS_ROOT}/${projectId}/${s.filename}`;
-      if (fs.existsSync(cuidPath)) {
-        return { testCaseId: s.testCaseId, scriptPath: cuidPath };
+      // Prefer slug/filename path (always works regardless of sourceRef)
+      const slugByFilename = `${SCRIPTS_ROOT}/${project?.slug}/${s.filename}`;
+      if (fs.existsSync(slugByFilename)) {
+        return { testCaseId: s.testCaseId, scriptPath: slugByFilename };
       }
+      // Fall back to sourceRef-based slug path
       const sourceRef = s.testCase?.sourceRef;
       if (sourceRef) {
         const slugPath = `${SCRIPTS_ROOT}/${project?.slug}/${sourceRef}`;
@@ -68,6 +71,8 @@ async function resolveScriptPaths(
           return { testCaseId: s.testCaseId, scriptPath: slugPath };
         }
       }
+      // Last resort: projectId-based path
+      const cuidPath = `${SCRIPTS_ROOT}/${projectId}/${s.filename}`;
       return { testCaseId: s.testCaseId, scriptPath: cuidPath };
     });
 }
@@ -177,7 +182,7 @@ router.post('/:suiteId/run', (async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: 'Validation failed', issues: parsed.error.issues });
   }
-  const { environment, parallelWorkers, headless, browser, name } = parsed.data;
+  const { environment, parallelWorkers, headless, browser, record, name } = parsed.data;
 
   // 2. Load suite and decode its stages
   const suite = await prisma.suite.findFirst({ where: { id: suiteId, projectId } });
@@ -280,7 +285,7 @@ router.post('/:suiteId/run', (async (req, res) => {
     headless,
     browser,
     triggerType:    'SUITE',
-    record:         req.project.videoEnabled !== false,
+    record:         record && req.project.videoEnabled !== false,
   });
 
   // 6. Return run record so the caller can poll status
