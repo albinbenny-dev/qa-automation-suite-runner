@@ -417,6 +417,7 @@ const server = http.createServer(async (req, res) => {
       '--listener', `${listenerPath}:${effectiveOutputDir}`,
       '--variable', `BASE_URL:${baseUrl || ''}`,
       '--variable', `OUTPUTDIR:${effectiveOutputDir}`,
+      '--variable', `VIDEO_DIR:${effectiveOutputDir}`,
       '--variable', `BROWSER:${seleniumBrowser}`,
       '--variable', `SELENIUM_SPEED:0`,
       '--variable', `HEADLESS:${headless ? 'true' : 'false'}`,
@@ -492,6 +493,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     sendLine({ type: 'log', text: `[runner] Starting Robot Framework (${seleniumBrowser}) headless=${headless} display=${assignedDisplay}` });
+
+    const runStartedAt = Date.now();
 
     proc = spawn(ROBOT_BIN, robotArgs, {
       cwd:   scriptDir,
@@ -607,6 +610,40 @@ const server = http.createServer(async (req, res) => {
         scanDir(effectiveOutputDir);
       } catch (scanErr) {
         console.error(`[qa-runner] artifact scan error: ${scanErr.message}`);
+      }
+
+      // ── Pick up script-native video (e.g. Python VideoRecorder) when QAASR recording is off ──
+      // Scan the project scripts root for any .mp4 written after the run started.
+      // Copy the newest one into effectiveOutputDir so the run report can show it.
+      if (!videoPath && projectSlug) {
+        try {
+          const projectScriptsRoot = path.join(SCRIPTS_DIR, projectSlug);
+          let newestMp4 = null;
+          let newestMtime = 0;
+          const scanForMp4 = (dir) => {
+            if (!fs.existsSync(dir)) return;
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) { scanForMp4(full); }
+              else if (/\.mp4$/i.test(entry.name)) {
+                const mtime = fs.statSync(full).mtimeMs;
+                if (mtime >= runStartedAt && mtime > newestMtime) {
+                  newestMtime = mtime;
+                  newestMp4 = full;
+                }
+              }
+            }
+          };
+          scanForMp4(projectScriptsRoot);
+          if (newestMp4) {
+            const destVideo = path.join(effectiveOutputDir, 'video.mp4');
+            fs.copyFileSync(newestMp4, destVideo);
+            videoPath = destVideo;
+            sendLine({ type: 'log', text: `[runner] 📹 Script video found and linked: ${path.basename(newestMp4)}` });
+          }
+        } catch (vidErr) {
+          sendLine({ type: 'log', text: `[runner] ⚠ Script video scan failed: ${vidErr.message}` });
+        }
       }
 
       sendLine({ type: 'done', exitCode: exitCode ?? 1, reportData, screenshotPath, videoPath, errorSnippet: errorLines || null });
