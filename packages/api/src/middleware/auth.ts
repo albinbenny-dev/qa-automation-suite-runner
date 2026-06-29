@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { prisma } from '../lib/prisma.js';
 
 interface TokenPayload {
   id: string;
@@ -46,7 +47,19 @@ export function verifyToken(req: Request, res: Response, next: NextFunction): vo
       return;
     }
 
-    req.user = decoded as unknown as TokenPayload;
+    const payload = decoded as unknown as TokenPayload;
+
+    // Live user existence check — rejects tokens for deleted accounts immediately
+    const user = await prisma.user.findUnique({
+      where: { id: payload.id },
+      select: { id: true },
+    });
+    if (!user) {
+      res.status(401).json({ error: 'Account not found or has been removed' });
+      return;
+    }
+
+    req.user = payload;
     next();
   } catch (err) {
     if (err instanceof jwt.TokenExpiredError) {

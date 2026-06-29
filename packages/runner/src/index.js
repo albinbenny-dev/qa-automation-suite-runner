@@ -83,7 +83,7 @@ function waitForXvfb(display, onReady, maxRetries = 100) {
 
 // ── Acquire / release display from pool ───────────────────────────────────
 function acquireDisplay() {
-  const slot = displayPool.find((d) => d.free);
+  const slot = displayPool.find((d) => d.free && d.healthy !== false);
   if (!slot) return null;
   slot.free = false;
   return slot;
@@ -122,7 +122,31 @@ async function startDisplayPool() {
     // Give openbox time to connect to the display before Chrome uses it
     await new Promise((resolve) => setTimeout(resolve, 1000));
 
-    displayPool.push({ display, xvfbProc, free: true, ffmpegProc: null });
+    const slot = { display, xvfbProc, free: true, ffmpegProc: null, healthy: true };
+    displayPool.push(slot);
+
+    // Watchdog: restart Xvfb if it crashes after startup
+    if (xvfbProc) {
+      xvfbProc.on('exit', (code) => {
+        if (code === null) return; // killed intentionally during shutdown
+        console.error(`[qa-runner] Xvfb ${display} exited unexpectedly (code ${code}) — marking slot unhealthy`);
+        slot.healthy = false;
+        slot.free = false;
+        // Attempt restart after a short delay
+        setTimeout(() => {
+          console.log(`[qa-runner] Restarting Xvfb on ${display}`);
+          try { fs.rmSync(socket, { force: true }); } catch {}
+          const newProc = spawnLogged('Xvfb', [display, '-screen', '0', '1280x900x24', '-ac', '+extension', 'GLX', '+render', '-noreset']);
+          slot.xvfbProc = newProc;
+          waitForXvfb(display, () => {
+            console.log(`[qa-runner] Xvfb ${display} recovered — slot marked healthy`);
+            slot.healthy = true;
+            slot.free = true;
+          });
+        }, 2000);
+      });
+    }
+
     console.log(`[qa-runner] Display ${display} ready`);
   }
   console.log(`[qa-runner] Display pool ready: ${displayPool.map((d) => d.display).join(', ')}`);
@@ -257,9 +281,10 @@ function parseRobotXmlReport(xmlPath) {
 // ── HTTP server ────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
-    const free = displayPool.filter((d) => d.free).length;
+    const free    = displayPool.filter((d) => d.free && d.healthy !== false).length;
+    const healthy = displayPool.filter((d) => d.healthy !== false).length;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', freeDisplays: free, totalDisplays: displayPool.length }));
+    res.end(JSON.stringify({ status: 'ok', freeDisplays: free, healthyDisplays: healthy, totalDisplays: displayPool.length }));
     return;
   }
 

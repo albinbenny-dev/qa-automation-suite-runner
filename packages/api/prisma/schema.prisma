@@ -153,6 +153,7 @@ model Run {
   @@index([projectId])
   @@index([projectId, status])
   @@index([projectId, createdAt])
+  @@index([createdByUserId])
 }
 
 model RunResult {
@@ -175,6 +176,7 @@ model RunResult {
   @@unique([runId, testCaseId])
   @@index([runId])
   @@index([testCaseId])
+  @@index([scriptId])
 }
 
 model Schedule {

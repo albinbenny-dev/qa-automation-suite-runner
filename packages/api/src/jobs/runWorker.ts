@@ -96,17 +96,27 @@ async function processRunJob(job: Job<RunJobPayload>): Promise<void> {
     }
   }
 
-  for (const tcId of testCaseIds) {
-    await prisma.runResult.create({
-      data: { runId, testCaseId: tcId, status: 'PENDING', scriptId: tcIdToScriptId.get(tcId) },
+  if (testCaseIds.length > 0) {
+    await prisma.runResult.createMany({
+      data: testCaseIds.map((tcId) => ({
+        runId,
+        testCaseId: tcId,
+        status: 'PENDING',
+        scriptId: tcIdToScriptId.get(tcId) ?? null,
+      })),
     });
   }
 
   if (skippedTcIds.length > 0) {
+    await prisma.runResult.createMany({
+      data: skippedTcIds.map((tcId) => ({
+        runId,
+        testCaseId: tcId,
+        status: 'SKIPPED',
+        errorMessage: 'No automation script — test case skipped',
+      })),
+    });
     for (const tcId of skippedTcIds) {
-      await prisma.runResult.create({
-        data: { runId, testCaseId: tcId, status: 'SKIPPED', errorMessage: 'No automation script — test case skipped' },
-      });
       emitLog(runId, 'warn', `⊙ ${tcReadableId.get(tcId) ?? tcId} SKIPPED — no automation script`);
     }
   }

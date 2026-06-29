@@ -68,7 +68,15 @@ router.get('/', async (req: Request, res: Response) => {
 
     const scripts = await prisma.script.findMany({
       where: { projectId },
-      include: {
+      select: {
+        id: true,
+        projectId: true,
+        testCaseId: true,
+        filename: true,
+        scriptType: true,
+        isCustomUpload: true,
+        createdAt: true,
+        updatedAt: true,
         testCase: { select: { id: true, tcId: true, title: true, useCaseTag: true } },
         runResults: {
           select: { status: true, createdAt: true },

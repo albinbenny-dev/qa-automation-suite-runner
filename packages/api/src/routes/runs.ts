@@ -164,6 +164,7 @@ router.get('/schedules', async (req: Request, res: Response, next: NextFunction)
     const schedules = await prisma.schedule.findMany({
       where: { projectId: req.project.id },
       orderBy: { createdAt: 'desc' },
+      take: 200,
     });
     res.json({ schedules });
   } catch (err) { next(err); }
@@ -518,9 +519,6 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
         take: limit,
         include: {
           _count: { select: { results: true } },
-          results: {
-            select: { status: true },
-          },
         },
       }),
       prisma.run.count({ where: { projectId: req.project.id } }),
@@ -541,6 +539,7 @@ router.get('/:runId', async (req: Request, res: Response, next: NextFunction) =>
             testCase: { select: { id: true, tcId: true, title: true, type: true, useCaseTag: true } },
           },
           orderBy: { createdAt: 'asc' },
+          take: 1000,
         },
       },
     });
