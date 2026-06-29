@@ -360,7 +360,10 @@ const server = http.createServer(async (req, res) => {
       const text = chunk.toString('utf8');
       for (const line of text.split('\n')) {
         const trimmed = line.trim();
-        if (trimmed) sendLine({ type: 'log', text: trimmed });
+        if (trimmed) {
+          sendLine({ type: 'log', text: trimmed });
+          process.stdout.write(`[robot] ${trimmed}\n`);
+        }
       }
     };
 
