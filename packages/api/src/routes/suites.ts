@@ -257,11 +257,6 @@ router.post('/:suiteId/run', (async (req, res) => {
   const runSeq   = await nextRunSeq();
   const runName  = name ?? `Suite: ${suite.name} — ${environment}`;
 
-  // Ensure parallelWorkers is at least the number of parallel stages so every
-  // parallel stage gets its own actor slot and none are queued behind others.
-  const parallelStageCount = resolvedStages.filter((s) => s.mode === 'parallel').length;
-  const effectiveParallelWorkers = Math.max(parallelWorkers, parallelStageCount);
-
   const run = await prisma.run.create({
     data: {
       projectId,
@@ -286,7 +281,7 @@ router.post('/:suiteId/run', (async (req, res) => {
     envBaseUrl:     envConfig.baseUrl,
     envUsername:    envConfig.username,
     envPassword:    envConfig.password,
-    parallelWorkers: effectiveParallelWorkers,
+    parallelWorkers,
     headless,
     browser,
     triggerType:    'SUITE',
