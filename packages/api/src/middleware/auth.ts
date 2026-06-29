@@ -23,7 +23,7 @@ interface TokenPayload {
  *   401  Invalid token signature / payload
  *   500  JWT_SECRET not configured
  */
-export function verifyToken(req: Request, res: Response, next: NextFunction): void {
+export async function verifyToken(req: Request, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers.authorization;
 
   if (!authHeader?.startsWith('Bearer ')) {
@@ -49,17 +49,18 @@ export function verifyToken(req: Request, res: Response, next: NextFunction): vo
 
     const payload = decoded as unknown as TokenPayload;
 
-    // Live user existence check — rejects tokens for deleted accounts immediately
+    // Live DB lookup — rejects deleted accounts and always uses current globalRole
+    // so revoked or demoted users can't use stale JWT claims (F8).
     const user = await prisma.user.findUnique({
       where: { id: payload.id },
-      select: { id: true },
+      select: { id: true, globalRole: true },
     });
     if (!user) {
       res.status(401).json({ error: 'Account not found or has been removed' });
       return;
     }
 
-    req.user = payload;
+    req.user = { ...payload, globalRole: user.globalRole };
     next();
   } catch (err) {
     if (err instanceof jwt.TokenExpiredError) {

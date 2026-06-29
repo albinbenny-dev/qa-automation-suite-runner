@@ -31,9 +31,19 @@ const CreateGroupRunSchema = z.object({
   record: z.boolean().default(true),
 });
 
+// Valid cron field: *, */n, n, n-m, or comma-separated combinations thereof
+const CRON_FIELD_RE = /^(\*|(\*\/\d+)|(\d+(-\d+)?)(,(\d+(-\d+)?))*)$/;
+function isValidCronExpression(expr: string): boolean {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length < 5 || parts.length > 6) return false;
+  return parts.every((p) => CRON_FIELD_RE.test(p));
+}
+
 const CreateScheduleSchema = z.object({
   name: z.string().min(1).max(100),
-  cronExpression: z.string().min(9).max(100),
+  cronExpression: z.string().min(9).max(100).refine(isValidCronExpression, {
+    message: 'Invalid cron expression — must be 5 or 6 space-separated fields (e.g. "0 9 * * 1-5")',
+  }),
   testCaseIds: z.array(z.string()).min(1),
   environment: z.string().min(1),
   isActive: z.boolean().default(true),
