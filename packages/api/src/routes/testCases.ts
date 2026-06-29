@@ -692,7 +692,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
         where,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         include: { prerequisiteTc: { select: { id: true, tcId: true, title: true } } } as any,
-        orderBy: [{ useCaseTag: 'asc' }, { createdAt: 'desc' }],
+        orderBy: [{ useCaseTag: 'asc' }, { sortOrder: 'asc' }, { tcId: 'asc' }],
         skip,
         take: limitNum,
       }),

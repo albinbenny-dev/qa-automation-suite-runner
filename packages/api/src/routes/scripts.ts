@@ -85,7 +85,11 @@ router.get('/', async (req: Request, res: Response) => {
           take: 1,
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [
+        { testCase: { useCaseTag: 'asc' } },
+        { testCase: { sortOrder: 'asc' } },
+        { testCase: { tcId: 'asc' } },
+      ],
     });
 
     const enriched = scripts.map((s: (typeof scripts)[number]) => {
@@ -483,6 +487,7 @@ router.post(
               projectId,
               tcId: `${uploadPrefix}-${String(uploadCounter).padStart(3, '0')}`,
               title: scriptTitle, type: 'UI', status: 'DRAFT', expectedResult: '',
+              sortOrder: uploadCounter,
               scripts: { connect: { id: script.id } },
             },
           });
@@ -894,6 +899,7 @@ router.post('/import-folder', requireProjectAccess as RequestHandler, folderUplo
             projectId,
             tcId: `${tcPrefix}-${String(tcCounter).padStart(3, '0')}`,
             title: scriptTitle, type: 'UI', status: 'DRAFT', expectedResult: '',
+            sortOrder: tcCounter,
             ...(useCaseTag ? { useCaseTag } : {}),
             scripts: { connect: { id: script.id } },
           },
