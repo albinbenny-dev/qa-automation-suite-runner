@@ -39,7 +39,10 @@ RUN pip install --no-cache-dir \
     selenium \
     pandas \
     openpyxl \
-    pyyaml
+    pyyaml \
+    mss \
+    imageio \
+    numpy
 
 # ── Custom CA certificates (e.g. internal OCP/lab environments) ──────────────
 # Drop any *.crt files into packages/runner/certs/ and they will be trusted

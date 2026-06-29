@@ -401,9 +401,8 @@ router.post(
           },
         });
 
-        // Build filename and save the .robot file under the feature folder
-        filename = buildSystemFilename(libEntry.tcId, libEntry.title, req.file.originalname);
-        filename = `TestCases/${folderName}/${filename}`;
+        // Build filename and save the .robot file under the feature folder (use original filename)
+        filename = `TestCases/${folderName}/${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
         saveScript(slug, filename, rawContent);
 
         const script = await prisma.script.create({
@@ -466,38 +465,28 @@ router.post(
         },
       });
 
-      // Auto-create test cases from *** Test Cases *** section when in standalone mode
+      // One script = one TestCase; title = filename without extension
       let tcCreated = 0;
       if (autoCreateTCs && !testCaseId) {
-        const tcNames: string[] = [];
-        let inTcSection = false;
-        for (const line of rawContent.split('\n')) {
-          if (/^\*+\s*Test Cases\s*\**/i.test(line.trim())) { inTcSection = true; continue; }
-          if (/^\*+\s/.test(line.trim()) && inTcSection) { inTcSection = false; continue; }
-          if (inTcSection && line.trim() && !line.trim().startsWith('#') && !/^\s/.test(line)) {
-            tcNames.push(line.trim());
-          }
-        }
+        const scriptTitle = path.basename(filename, '.robot');
         const existingIds = await prisma.testCase.findMany({ where: { projectId }, select: { tcId: true } });
         const uploadPrefix = req.project.slug.replace(/[^a-z0-9]/gi, '').slice(0, 6).toUpperCase() || 'TC';
         let uploadCounter = existingIds.reduce((max, { tcId }) => {
           const m = tcId.match(/(\d+)$/);
           return m ? Math.max(max, parseInt(m[1], 10)) : max;
         }, 0);
-        for (const name of tcNames) {
-          const existing = await prisma.testCase.findFirst({ where: { projectId, title: name } });
-          if (!existing) {
-            uploadCounter++;
-            await prisma.testCase.create({
-              data: {
-                projectId,
-                tcId: `${uploadPrefix}-${String(uploadCounter).padStart(3, '0')}`,
-                title: name, type: 'UI', status: 'DRAFT', expectedResult: '',
-                scripts: { connect: { id: script.id } },
-              },
-            });
-            tcCreated++;
-          }
+        const existingTc = await prisma.testCase.findFirst({ where: { projectId, title: scriptTitle } });
+        if (!existingTc) {
+          uploadCounter++;
+          await prisma.testCase.create({
+            data: {
+              projectId,
+              tcId: `${uploadPrefix}-${String(uploadCounter).padStart(3, '0')}`,
+              title: scriptTitle, type: 'UI', status: 'DRAFT', expectedResult: '',
+              scripts: { connect: { id: script.id } },
+            },
+          });
+          tcCreated = 1;
         }
       }
 
@@ -852,84 +841,74 @@ router.post('/import-folder', requireProjectAccess as RequestHandler, folderUplo
       // Skip run-artifact file types and known noisy filenames
       if (SKIP_EXTS.has(ext) || SKIP_FILES.has(filename)) continue;
 
-      // Destination: preserve the full relative path under the project root
-      const destPath = path.join(projectRootDir, entryName);
+      // Normalise: if the test script lives under "tests/", rewrite it to "TestCases/" so that
+      // the DB filename and on-disk path are consistent regardless of the project's folder naming.
+      // The relative depth stays identical (2 levels: root → useCase → file), so all
+      // ../../resources/... imports inside the .robot files continue to resolve correctly.
+      const normalizedEntry = /^tests\//i.test(entryName)
+        ? 'TestCases/' + entryName.slice(entryName.indexOf('/') + 1)
+        : entryName;
+
+      // Destination: always write to the normalized path under the project root
+      const destPath = path.join(projectRootDir, normalizedEntry);
       fs.mkdirSync(path.dirname(destPath), { recursive: true });
       fs.writeFileSync(destPath, entry.getData());
 
-      // Only .robot files inside TestCases get DB script records + TC auto-creation.
+      // Only .robot files inside TestCases (or tests, normalised above) get DB script records.
       // All other files (resource .robot files, xlsx, yaml, etc.) are written to disk above and skipped here.
       const isTestScript = filename.endsWith('.robot') &&
-        /\/(TestCases)\//i.test('/' + entryName);
+        /\/(TestCases|tests)\//i.test('/' + entryName);
 
       if (!isTestScript) continue;
 
       // ── .robot test script ────────────────────────────────────────────────
       const content = entry.getData().toString('utf-8');
 
-      // Derive use-case group from folder structure.
-      // e.g. "TestCases/Primary Sales & Return/TC01.robot" → "Primary Sales & Return"
-      const pathParts = entryName.split('/');
+      // Derive use-case group from the second path segment (e.g. "TestCases/Primary Sales/TC01.robot" → "Primary Sales")
+      const pathParts = normalizedEntry.split('/');
       const useCaseTag: string | null =
         pathParts.length >= 3 && /^TestCases$/i.test(pathParts[0])
           ? pathParts[1]
           : null;
 
-      // Parse test case names from *** Test Cases *** section
-      const tcNames: string[] = [];
-      let inTcSection = false;
-      for (const line of content.split('\n')) {
-        if (/^\*+\s*Test Cases\s*\**/i.test(line.trim())) { inTcSection = true; continue; }
-        if (/^\*+\s/.test(line.trim()) && inTcSection) { inTcSection = false; continue; }
-        if (inTcSection && line.trim() && !line.trim().startsWith('#') && !/^\s/.test(line)) {
-          tcNames.push(line.trim());
-        }
-      }
+      // Script title = filename without extension (one script = one entry, regardless of internal TC count)
+      const scriptTitle = path.basename(normalizedEntry, '.robot');
 
-      // Upsert script — filename is the full relative path (e.g. TestCases/Primary Sales/TC01.robot)
+      // Upsert script — keyed on the normalized filename (e.g. TestCases/Primary Sales/TC01.robot)
       const script = await prisma.script.upsert({
-        where: { projectId_filename: { projectId, filename: entryName } },
-        create: { projectId, filename: entryName, content, scriptType: 'ROBOT' },
+        where: { projectId_filename: { projectId, filename: normalizedEntry } },
+        create: { projectId, filename: normalizedEntry, content, scriptType: 'ROBOT' },
         update: { content },
       });
 
-      // Auto-create test cases, grouped under the use-case derived from the folder name
+      // One TestCase per script file; title = script filename (without .robot)
+      const existing = await prisma.testCase.findFirst({
+        where: { projectId, title: scriptTitle, ...(useCaseTag ? { useCaseTag } : {}) },
+        include: { scripts: { select: { id: true } } },
+      });
       let tcCreated = 0;
-      for (const name of tcNames) {
-        const existing = await prisma.testCase.findFirst({
-          where: {
+      if (!existing) {
+        tcCounter++;
+        await prisma.testCase.create({
+          data: {
             projectId,
-            title: name,
-            // Scope duplicate-name check to the same use-case folder so that
-            // the same TC name under different folders creates separate records.
+            tcId: `${tcPrefix}-${String(tcCounter).padStart(3, '0')}`,
+            title: scriptTitle, type: 'UI', status: 'DRAFT', expectedResult: '',
             ...(useCaseTag ? { useCaseTag } : {}),
+            scripts: { connect: { id: script.id } },
           },
-          include: { scripts: { select: { id: true } } },
         });
-        if (!existing) {
-          tcCounter++;
-          await prisma.testCase.create({
-            data: {
-              projectId,
-              tcId: `${tcPrefix}-${String(tcCounter).padStart(3, '0')}`,
-              title: name, type: 'UI', status: 'DRAFT', expectedResult: '',
-              ...(useCaseTag ? { useCaseTag } : {}),
-              scripts: { connect: { id: script.id } },
-            },
-          });
-          tcCreated++;
-        } else {
-          // TC already exists — ensure it is linked to this script and backfill useCaseTag
-          const alreadyLinked = existing.scripts.some((s) => s.id === script.id);
-          if (!alreadyLinked) {
-            await prisma.testCase.update({ where: { id: existing.id }, data: { scripts: { connect: { id: script.id } } } });
-          }
-          if (useCaseTag && !existing.useCaseTag) {
-            await prisma.testCase.update({ where: { id: existing.id }, data: { useCaseTag } });
-          }
+        tcCreated = 1;
+      } else {
+        const alreadyLinked = existing.scripts.some((s) => s.id === script.id);
+        if (!alreadyLinked) {
+          await prisma.testCase.update({ where: { id: existing.id }, data: { scripts: { connect: { id: script.id } } } });
+        }
+        if (useCaseTag && !existing.useCaseTag) {
+          await prisma.testCase.update({ where: { id: existing.id }, data: { useCaseTag } });
         }
       }
-      results.push({ filename: entryName, testCasesCreated: tcCreated });
+      results.push({ filename: normalizedEntry, testCasesCreated: tcCreated });
     }
 
     res.json({ imported: results, warnings });
