@@ -243,6 +243,15 @@ projectRouter.delete(
         return;
       }
 
+      // Wipe project files from disk before DB delete
+      const SCRIPTS_ROOT   = process.env.SCRIPTS_ROOT   ?? '/scripts';
+      const ARTIFACTS_ROOT = process.env.ARTIFACTS_ROOT ?? process.env.ARTIFACTS_PATH ?? '/artifacts';
+      const slug = req.project.slug;
+      await Promise.allSettled([
+        fs.promises.rm(path.join(SCRIPTS_ROOT,   slug), { recursive: true, force: true }),
+        fs.promises.rm(path.join(ARTIFACTS_ROOT, slug), { recursive: true, force: true }),
+      ]);
+
       // Cascade delete handles all child records via Prisma relations
       await prisma.project.delete({ where: { id: req.project.id } });
 
@@ -651,6 +660,16 @@ projectRouter.post(
           const newLinked = item.linkedScriptId ? (tcMap.get(item.linkedScriptId) ?? null) : null;
           await tx.tcItem.create({
             data: { projectId: p.id, srNo: item.srNo, module: item.module, feature: item.feature, title: item.title, description: item.description, steps: item.steps, expectedResult: item.expectedResult, linkedScriptId: newLinked },
+          });
+        }
+
+        // Suites — remap testCaseIds using tcMap; stages use useCaseTag strings so copy as-is
+        const suites = await tx.suite.findMany({ where: { projectId: src.id } });
+        for (const suite of suites) {
+          const oldIds: string[] = JSON.parse(suite.testCaseIds || '[]');
+          const newIds = oldIds.map((id) => tcMap.get(id) ?? id);
+          await tx.suite.create({
+            data: { projectId: p.id, name: suite.name, testCaseIds: JSON.stringify(newIds), stages: suite.stages },
           });
         }
 

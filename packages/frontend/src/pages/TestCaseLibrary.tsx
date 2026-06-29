@@ -14,7 +14,9 @@ import {
   useBulkDeleteTcItems,
   useBulkLinkTcItems,
   useBulkMoveTcItems,
+  useBulkSetAutomationStatus,
   type TcItem,
+  type ImportResult,
 } from '../hooks/useTcItems';
 import { useExecutionStore } from '../stores/executionStore';
 import { api } from '../lib/api';
@@ -50,25 +52,32 @@ function colorToRgba(cssVar: string, alpha: number): string {
 }
 
 // Grid shared between header row and data rows
-// No Module column — Feature is already the group header; Description gets the bulk of the space
-const GRID = '28px 50px 240px 1fr 90px 116px';
-const HEADERS = ['', 'SR No', 'Test Case', 'Description', 'Script Link', 'Actions'];
+const GRID = '28px 110px 240px 1fr 90px 136px';
+const HEADERS = ['', 'TC ID', 'Test Case', 'Description', 'Script Link', 'Actions'];
+
+function naturalCompare(a: string | null, b: string | null): number {
+  if (!a && !b) return 0;
+  if (!a) return 1;
+  if (!b) return -1;
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
 
 // ── Feature group ───────────────────────────────────────────────────────────
 function FeatureGroup({
   feature, color, items, isOpen, onOpenChange,
   selectedIds, onToggle, onToggleAll,
-  onEdit, onLink, onDelete, onRun,
+  onEdit, onLink, onDelete, onRun, onToggleNA,
 }: {
   feature: string; color: string; items: TcItem[]; isOpen: boolean; onOpenChange: (open: boolean) => void;
   selectedIds: Set<string>; onToggle: (id: string) => void; onToggleAll: (ids: string[]) => void;
   onEdit: (item: TcItem) => void; onLink: (item: TcItem) => void;
-  onDelete: (item: TcItem) => void; onRun: (item: TcItem) => void;
+  onDelete: (item: TcItem) => void; onRun: (item: TcItem) => void; onToggleNA: (item: TcItem) => void;
 }) {
   const ids = items.map((i) => i.id);
   const selectedCount = ids.filter((id) => selectedIds.has(id)).length;
   const allSelected = ids.length > 0 && selectedCount === ids.length;
-  const linkedCount = items.filter((i) => i.linkedScriptId).length;
+  const linkedCount = items.filter((i) => i.linkedScriptId && i.automationStatus === 'IN_SCOPE').length;
+  const naCount = items.filter((i) => i.automationStatus === 'NOT_APPLICABLE').length;
 
   return (
     <div style={{ background: 'var(--surface)', border: `1px solid ${colorToRgba(color, 0.25)}`, borderRadius: 'var(--radius-lg)', overflow: 'hidden', boxShadow: 'var(--shadow-card)' }}>
@@ -89,7 +98,8 @@ function FeatureGroup({
         <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text)', flex: 1 }}>{feature}</span>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{items.length} TCs</span>
         {linkedCount > 0 && <span className="badge badge-pass" style={{ fontSize: '8px' }}>{linkedCount} linked</span>}
-        {linkedCount < items.length && <span className="badge badge-draft" style={{ fontSize: '8px' }}>{items.length - linkedCount} unlinked</span>}
+        {linkedCount < items.length - naCount && <span className="badge badge-draft" style={{ fontSize: '8px' }}>{items.length - naCount - linkedCount} unlinked</span>}
+        {naCount > 0 && <span style={{ fontSize: '8px', padding: '2px 5px', borderRadius: '4px', background: 'rgba(107,114,128,0.12)', border: '1px solid rgba(107,114,128,0.25)', color: 'var(--text-dim)', fontWeight: 700 }}>{naCount} N/A</span>}
       </div>
 
       {/* Table */}
@@ -103,7 +113,7 @@ function FeatureGroup({
             ))}
           </div>
           {items.map((item) => (
-            <TcItemRow key={item.id} item={item} selected={selectedIds.has(item.id)} onToggle={onToggle} onEdit={onEdit} onLink={onLink} onDelete={onDelete} onRun={onRun} />
+            <TcItemRow key={item.id} item={item} selected={selectedIds.has(item.id)} onToggle={onToggle} onEdit={onEdit} onLink={onLink} onDelete={onDelete} onRun={onRun} onToggleNA={onToggleNA} />
           ))}
         </div>
       )}
@@ -112,87 +122,158 @@ function FeatureGroup({
 }
 
 // ── TC Item row ────────────────────────────────────────────────────────────
-function TcItemRow({ item, selected, onToggle, onEdit, onLink, onDelete, onRun }: {
+function TcItemRow({ item, selected, onToggle, onEdit, onLink, onDelete, onRun, onToggleNA }: {
   item: TcItem; selected: boolean;
   onToggle: (id: string) => void; onEdit: (item: TcItem) => void;
   onLink: (item: TcItem) => void; onDelete: (item: TcItem) => void;
-  onRun: (item: TcItem) => void;
+  onRun: (item: TcItem) => void; onToggleNA: (item: TcItem) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasDetail = !!(item.steps || item.expectedResult || item.description);
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: GRID, gap: '8px', padding: '8px 14px', alignItems: 'center', borderBottom: '1px solid var(--border)', background: selected ? 'var(--cyan-dim)' : 'transparent', borderLeft: selected ? '2px solid var(--cyan)' : '2px solid transparent', transition: 'background 0.15s' }}>
-      <div className={`tc-checkbox${selected ? ' checked' : ''}`} style={{ fontSize: '10px', flexShrink: 0 }} onClick={() => onToggle(item.id)}>
-        {selected ? '✓' : ''}
-      </div>
+    <div style={{ borderBottom: '1px solid var(--border)' }}>
+      {/* Main row */}
+      <div style={{ display: 'grid', gridTemplateColumns: GRID, gap: '8px', padding: '8px 14px', alignItems: 'center', background: selected ? 'var(--cyan-dim)' : item.automationStatus === 'NOT_APPLICABLE' ? 'rgba(107,114,128,0.04)' : 'transparent', borderLeft: selected ? '2px solid var(--cyan)' : item.automationStatus === 'NOT_APPLICABLE' ? '2px solid rgba(107,114,128,0.3)' : '2px solid transparent', transition: 'background 0.15s', opacity: item.automationStatus === 'NOT_APPLICABLE' ? 0.6 : 1 }}>
+        <div className={`tc-checkbox${selected ? ' checked' : ''}`} style={{ fontSize: '10px', flexShrink: 0 }} onClick={() => onToggle(item.id)}>
+          {selected ? '✓' : ''}
+        </div>
 
-      <div style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-dim)' }}>{item.srNo ?? '—'}</div>
-
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</div>
-      </div>
-
-      {/* Description — wider, no steps */}
-      <div style={{ fontSize: '10px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.description ?? ''}>
-        {item.description ?? '—'}
-      </div>
-
-      <div>
-        {item.linkedScript ? (
-          <span className="badge badge-pass" style={{ fontSize: '8px', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }} title={item.linkedScript.title}>
-            ⚡ {item.linkedScript.tcId}
-          </span>
-        ) : (
-          <span className="badge badge-draft" style={{ fontSize: '8px' }}>Unlinked</span>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', gap: '3px', justifyContent: 'flex-end' }} onClick={(e) => e.stopPropagation()}>
-        {/* Execute — only for linked TCs */}
-        {item.linkedScript && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
           <button
-            title="Run this script in Execution"
-            onClick={() => onRun(item)}
-            style={{ width: '24px', height: '24px', borderRadius: '4px', background: 'rgba(37,99,171,0.12)', border: '1px solid rgba(37,99,171,0.3)', color: 'var(--cyan)', fontSize: '10px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--cyan-dim)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--cyan)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(37,99,171,0.12)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(37,99,171,0.3)'; }}
-          >▶</button>
-        )}
-        {/* Spacer when no run button so other buttons stay aligned */}
-        {!item.linkedScript && <div style={{ width: '24px', flexShrink: 0 }} />}
+            title={expanded ? 'Collapse detail' : hasDetail ? 'Expand steps & expected result' : 'No detail available'}
+            onClick={() => hasDetail && setExpanded((v) => !v)}
+            style={{ width: '16px', height: '16px', borderRadius: '3px', background: expanded ? 'var(--cyan-dim)' : 'var(--surface2)', border: `1px solid ${expanded ? 'rgba(37,99,171,0.35)' : 'var(--border)'}`, color: expanded ? 'var(--cyan)' : hasDetail ? 'var(--text)' : 'var(--border)', fontSize: '8px', cursor: hasDetail ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s', lineHeight: 1 }}
+          >{expanded ? '▲' : '▼'}</button>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--cyan)', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.srNo ?? '—'}</span>
+        </div>
 
-        <button
-          title={item.linkedScript ? 'Change linked script' : 'Link to script'}
-          onClick={() => onLink(item)}
-          style={{ width: '24px', height: '24px', borderRadius: '4px', background: item.linkedScript ? 'var(--emerald-dim)' : 'var(--surface2)', border: item.linkedScript ? '1px solid rgba(42,157,143,0.3)' : '1px solid var(--border)', color: item.linkedScript ? 'var(--emerald)' : 'var(--text-dim)', fontSize: '11px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s' }}
-        >⛓</button>
-        <button
-          title="Edit test case"
-          onClick={() => onEdit(item)}
-          style={{ width: '24px', height: '24px', borderRadius: '4px', background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--text-dim)', fontSize: '11px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s' }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--cyan-dim)'; (e.currentTarget as HTMLButtonElement).style.color = 'var(--cyan)'; }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface2)'; (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-dim)'; }}
-        >✏</button>
-        <button
-          title="Delete"
-          onClick={() => onDelete(item)}
-          style={{ width: '24px', height: '24px', borderRadius: '4px', background: 'transparent', border: '1px solid transparent', color: 'var(--text-dim)', fontSize: '11px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s' }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(220,38,38,0.1)'; (e.currentTarget as HTMLButtonElement).style.color = 'var(--fail)'; }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-dim)'; }}
-        >🗑</button>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: '11px', fontWeight: 600, color: item.automationStatus === 'NOT_APPLICABLE' ? 'var(--text-dim)' : 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: item.automationStatus === 'NOT_APPLICABLE' ? 'line-through' : 'none' }}>{item.title}</div>
+        </div>
+
+        <div style={{ fontSize: '10px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.description ?? ''}>
+          {item.description ?? '—'}
+        </div>
+
+        <div>
+          {item.automationStatus === 'NOT_APPLICABLE' ? (
+            <span style={{ fontSize: '8px', padding: '2px 6px', borderRadius: '4px', background: 'rgba(107,114,128,0.12)', border: '1px solid rgba(107,114,128,0.3)', color: 'var(--text-dim)', fontWeight: 700, fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>N/A</span>
+          ) : item.linkedScript ? (
+            <span className="badge badge-pass" style={{ fontSize: '8px', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }} title={item.linkedScript.title}>
+              ⚡ {item.linkedScript.tcId}
+            </span>
+          ) : (
+            <span className="badge badge-draft" style={{ fontSize: '8px' }}>Unlinked</span>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: '3px', justifyContent: 'flex-end' }} onClick={(e) => e.stopPropagation()}>
+          {/* Execute — only for linked IN_SCOPE TCs */}
+          {item.linkedScript && item.automationStatus === 'IN_SCOPE' ? (
+            <button
+              title="Run this script in Execution"
+              onClick={() => onRun(item)}
+              style={{ width: '24px', height: '24px', borderRadius: '4px', background: 'rgba(37,99,171,0.12)', border: '1px solid rgba(37,99,171,0.3)', color: 'var(--cyan)', fontSize: '10px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--cyan-dim)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--cyan)'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(37,99,171,0.12)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(37,99,171,0.3)'; }}
+            >▶</button>
+          ) : <div style={{ width: '24px', flexShrink: 0 }} />}
+
+          {/* Scope toggle — green circle when IN_SCOPE, grey N/A when NOT_APPLICABLE */}
+          <button
+            title={item.automationStatus === 'NOT_APPLICABLE' ? 'Mark as In Scope' : 'Mark as Not Applicable'}
+            onClick={() => onToggleNA(item)}
+            style={{ width: '24px', height: '24px', borderRadius: '4px', background: item.automationStatus === 'NOT_APPLICABLE' ? 'rgba(107,114,128,0.15)' : 'rgba(34,197,94,0.12)', border: `1px solid ${item.automationStatus === 'NOT_APPLICABLE' ? 'rgba(107,114,128,0.4)' : 'rgba(34,197,94,0.35)'}`, color: item.automationStatus === 'NOT_APPLICABLE' ? '#9ca3af' : '#4ade80', fontSize: item.automationStatus === 'NOT_APPLICABLE' ? '9px' : '13px', fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s', fontFamily: 'var(--font-mono)' }}
+            onMouseEnter={(e) => { const na = item.automationStatus === 'NOT_APPLICABLE'; (e.currentTarget as HTMLButtonElement).style.background = na ? 'rgba(107,114,128,0.25)' : 'rgba(34,197,94,0.22)'; (e.currentTarget as HTMLButtonElement).style.borderColor = na ? 'rgba(107,114,128,0.6)' : 'rgba(34,197,94,0.55)'; }}
+            onMouseLeave={(e) => { const na = item.automationStatus === 'NOT_APPLICABLE'; (e.currentTarget as HTMLButtonElement).style.background = na ? 'rgba(107,114,128,0.15)' : 'rgba(34,197,94,0.12)'; (e.currentTarget as HTMLButtonElement).style.borderColor = na ? 'rgba(107,114,128,0.4)' : 'rgba(34,197,94,0.35)'; }}
+          >{item.automationStatus === 'NOT_APPLICABLE' ? 'N/A' : '●'}</button>
+
+          {/* Link — green */}
+          <button
+            title={item.linkedScript ? 'Change linked script' : 'Link to script'}
+            onClick={() => onLink(item)}
+            style={{ width: '24px', height: '24px', borderRadius: '4px', background: item.linkedScript ? 'rgba(42,157,143,0.18)' : 'rgba(42,157,143,0.07)', border: `1px solid ${item.linkedScript ? 'rgba(42,157,143,0.45)' : 'rgba(42,157,143,0.25)'}`, color: item.linkedScript ? 'var(--emerald)' : 'rgba(42,157,143,0.55)', fontSize: '11px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(42,157,143,0.25)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(42,157,143,0.6)'; (e.currentTarget as HTMLButtonElement).style.color = 'var(--emerald)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = item.linkedScript ? 'rgba(42,157,143,0.18)' : 'rgba(42,157,143,0.07)'; (e.currentTarget as HTMLButtonElement).style.borderColor = item.linkedScript ? 'rgba(42,157,143,0.45)' : 'rgba(42,157,143,0.25)'; (e.currentTarget as HTMLButtonElement).style.color = item.linkedScript ? 'var(--emerald)' : 'rgba(42,157,143,0.55)'; }}
+          >⛓</button>
+
+          {/* Edit — amber */}
+          <button
+            title="Edit test case"
+            onClick={() => onEdit(item)}
+            style={{ width: '24px', height: '24px', borderRadius: '4px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', color: '#f59e0b', fontSize: '11px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(245,158,11,0.2)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(245,158,11,0.5)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(245,158,11,0.1)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(245,158,11,0.3)'; }}
+          >✏</button>
+
+          {/* Delete — red */}
+          <button
+            title="Delete"
+            onClick={() => onDelete(item)}
+            style={{ width: '24px', height: '24px', borderRadius: '4px', background: 'rgba(220,38,38,0.1)', border: '1px solid rgba(220,38,38,0.3)', color: '#ef4444', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s', lineHeight: 1 }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(220,38,38,0.2)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(220,38,38,0.5)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(220,38,38,0.1)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(220,38,38,0.3)'; }}
+          >✕</button>
+        </div>
       </div>
+
+      {/* Expanded detail panel */}
+      {expanded && (
+        <div style={{ padding: '10px 14px 12px 46px', background: 'var(--surface2)', borderLeft: '2px solid rgba(37,99,171,0.2)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          {item.description && (
+            <div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '3px' }}>Description</div>
+              <div style={{ fontSize: '11px', color: 'var(--text)', lineHeight: 1.5 }}>{item.description}</div>
+            </div>
+          )}
+          {item.steps && (
+            <div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '3px' }}>Steps</div>
+              <pre style={{ margin: 0, fontSize: '11px', color: 'var(--text)', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{item.steps}</pre>
+            </div>
+          )}
+          {item.expectedResult && (
+            <div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '3px' }}>Expected Result</div>
+              <div style={{ fontSize: '11px', color: 'var(--emerald)', lineHeight: 1.5 }}>{item.expectedResult}</div>
+            </div>
+          )}
+          {/* Action buttons */}
+          <div style={{ display: 'flex', gap: '6px', paddingTop: '4px', borderTop: '1px solid var(--border)' }}>
+            <button
+              onClick={() => { setExpanded(false); onEdit(item); }}
+              style={{ padding: '5px 14px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.35)', borderRadius: '5px', color: '#f59e0b', fontSize: '11px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', transition: 'all 0.15s' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(245,158,11,0.2)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(245,158,11,0.55)'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(245,158,11,0.1)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(245,158,11,0.35)'; }}
+            >✏ Edit</button>
+            <button
+              onClick={() => { setExpanded(false); onDelete(item); }}
+              style={{ padding: '5px 14px', background: 'rgba(220,38,38,0.1)', border: '1px solid rgba(220,38,38,0.3)', borderRadius: '5px', color: '#ef4444', fontSize: '11px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', transition: 'all 0.15s' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(220,38,38,0.2)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(220,38,38,0.5)'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(220,38,38,0.1)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(220,38,38,0.3)'; }}
+            >✕ Delete</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ── Selection action bar ───────────────────────────────────────────────────
-function SelectionBar({ count, linkedCount, allFeatures, onClear, onBulkDelete, onMoveToFeature, onOpenLinkModal, onBulkRun }: {
+function SelectionBar({ count, linkedCount, naCount, inScopeCount, allFeatures, onClear, onBulkDelete, onMoveToFeature, onOpenLinkModal, onBulkRun, onBulkMarkNA, onBulkMarkInScope }: {
   count: number;
   linkedCount: number;
+  naCount: number;
+  inScopeCount: number;
   allFeatures: string[];
   onClear: () => void;
   onBulkDelete: () => void;
   onMoveToFeature: (feature: string) => void;
   onOpenLinkModal: () => void;
   onBulkRun: () => void;
+  onBulkMarkNA: () => void;
+  onBulkMarkInScope: () => void;
 }) {
   const [showMoveDrop, setShowMoveDrop] = useState(false);
   const [customFeature, setCustomFeature] = useState('');
@@ -210,6 +291,26 @@ function SelectionBar({ count, linkedCount, allFeatures, onClear, onBulkDelete, 
       >
         ⛓ Link Script
       </button>
+
+      {/* N/A / In Scope toggle */}
+      {inScopeCount > 0 && (
+        <button
+          onClick={onBulkMarkNA}
+          title={`Mark ${inScopeCount} in-scope TCs as Not Applicable`}
+          style={{ padding: '5px 12px', background: 'rgba(107,114,128,0.1)', border: '1px solid rgba(107,114,128,0.3)', borderRadius: '6px', color: 'var(--text-dim)', fontSize: '11px', fontWeight: 700, cursor: 'pointer' }}
+        >
+          N/A ({inScopeCount})
+        </button>
+      )}
+      {naCount > 0 && (
+        <button
+          onClick={onBulkMarkInScope}
+          title={`Restore ${naCount} N/A TCs to In Scope`}
+          style={{ padding: '5px 12px', background: 'rgba(42,157,143,0.1)', border: '1px solid rgba(42,157,143,0.3)', borderRadius: '6px', color: 'var(--emerald)', fontSize: '11px', fontWeight: 700, cursor: 'pointer' }}
+        >
+          ↩ In Scope ({naCount})
+        </button>
+      )}
 
       {/* 📁 Move to Feature */}
       <div style={{ position: 'relative' }}>
@@ -274,7 +375,7 @@ function EditItemModal({ item, onSave, onClose }: {
     if (!title.trim()) return;
     setSaving(true);
     try {
-      await onSave({ srNo: srNo ? Number(srNo) : undefined, module: module.trim() || undefined, feature: feature.trim() || undefined, title: title.trim(), description: description.trim() || undefined, steps: steps.trim() || undefined, expectedResult: expectedResult.trim() || undefined });
+      await onSave({ srNo: srNo.trim() || undefined, module: module.trim() || undefined, feature: feature.trim() || undefined, title: title.trim(), description: description.trim() || undefined, steps: steps.trim() || undefined, expectedResult: expectedResult.trim() || undefined });
     } finally { setSaving(false); }
   }
 
@@ -288,7 +389,7 @@ function EditItemModal({ item, onSave, onClose }: {
         </div>
         <div style={{ overflowY: 'auto', flex: 1, padding: '18px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr 1fr', gap: '12px' }}>
-            <div><div style={LABEL}>SR No</div><input type="number" style={INPUT} value={srNo} onChange={(e) => setSrNo(e.target.value)} placeholder="#" /></div>
+            <div><div style={LABEL}>SR No</div><input style={INPUT} value={srNo} onChange={(e) => setSrNo(e.target.value)} placeholder="e.g. AIR-TC-001" /></div>
             <div><div style={LABEL}>Module</div><input style={INPUT} value={module} onChange={(e) => setModule(e.target.value)} placeholder="e.g. CPM" /></div>
             <div><div style={LABEL}>Feature</div><input style={INPUT} value={feature} onChange={(e) => setFeature(e.target.value)} placeholder="e.g. Geo Hierarchy" /></div>
           </div>
@@ -460,10 +561,12 @@ function LinkScriptModal({ item, scripts, onLink, onClose }: {
 }
 
 // ── Bulk Link Script modal (same grouped view, used from floating SelectionBar) ──
-function BulkLinkScriptModal({ count, scripts, onSelect, onClose }: {
+function BulkLinkScriptModal({ count, linkedCount, scripts, onSelect, onUnlink, onClose }: {
   count: number;
+  linkedCount: number;
   scripts: Array<{ id: string; tcId: string; title: string; useCaseTag: string | null }>;
   onSelect: (testCaseId: string) => void;
+  onUnlink: () => void;
   onClose: () => void;
 }) {
   const [search, setSearch] = useState('');
@@ -514,6 +617,15 @@ function BulkLinkScriptModal({ count, scripts, onSelect, onClose }: {
             <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text)' }}>Link Script</div>
             <div style={{ fontSize: '10px', color: 'var(--text-dim)' }}>Linking {count} selected test case{count === 1 ? '' : 's'} to one script</div>
           </div>
+          {linkedCount > 0 && (
+            <button
+              onClick={() => { onUnlink(); onClose(); }}
+              title={`Unlink script from ${linkedCount} already-linked test case${linkedCount === 1 ? '' : 's'}`}
+              style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.35)', color: '#f87171', fontSize: '11px', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}
+            >
+              ✕ Unlink {linkedCount}
+            </button>
+          )}
           <button onClick={onClose} style={{ width: '28px', height: '28px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text-dim)', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
         </div>
 
@@ -576,6 +688,7 @@ function BulkLinkScriptModal({ count, scripts, onSelect, onClose }: {
 function ImportModal({ projectId, onClose, onImported }: { projectId: string; onClose: () => void; onImported: () => void }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
+  const [summary, setSummary] = useState<ImportResult | null>(null);
   const importMutation = useImportTcItems(projectId);
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -584,10 +697,10 @@ function ImportModal({ projectId, onClose, onImported }: { projectId: string; on
     setImporting(true);
     try {
       const result = await importMutation.mutateAsync(file);
-      toast.success(`Imported ${result.imported} test case${result.imported === 1 ? '' : 's'}`);
+      setSummary(result);
       onImported();
-      onClose();
-    } catch { toast.error('Import failed — check the file format'); } finally { setImporting(false); }
+    } catch { toast.error('Import failed — check the file format'); }
+    finally { setImporting(false); }
   }
 
   async function handleDownloadTemplate() {
@@ -598,33 +711,106 @@ function ImportModal({ projectId, onClose, onImported }: { projectId: string; on
     } catch { toast.error('Template download failed'); }
   }
 
+  const hasWarnings = summary && (summary.skippedEmpty > 0 || summary.duplicateRows.length > 0 || summary.rfNotFound.length > 0);
+
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: 'var(--surface)', border: '1px solid var(--border2)', borderRadius: '12px', width: '100%', maxWidth: '420px', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
-          <span style={{ fontSize: '14px' }}>📥</span>
-          <div style={{ flex: 1, fontSize: '13px', fontWeight: 700, color: 'var(--text)' }}>Import from Excel</div>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: 'var(--surface)', border: '1px solid var(--border2)', borderRadius: '12px', width: '100%', maxWidth: summary ? '520px' : '420px', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '14px 18px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          <span style={{ fontSize: '14px' }}>{summary ? (hasWarnings ? '⚠️' : '✅') : '📥'}</span>
+          <div style={{ flex: 1, fontSize: '13px', fontWeight: 700, color: 'var(--text)' }}>
+            {summary ? 'Import Summary' : 'Import from Excel'}
+          </div>
           <button onClick={onClose} style={{ width: '28px', height: '28px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text-dim)', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
         </div>
-        <div style={{ padding: '20px 18px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-mid)', lineHeight: 1.6 }}>
-            Upload an Excel file with columns: <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--cyan)' }}>SR. No, Module, Feature, Test Case Title, Test Case Description, Step, Expected Result</span>
-          </p>
-          <button onClick={handleDownloadTemplate} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text-dim)', fontSize: '11px', cursor: 'pointer', width: 'fit-content' }}>📄 Download template</button>
-          <div onClick={() => fileRef.current?.click()} style={{ border: '2px dashed var(--border2)', borderRadius: '8px', padding: '28px', textAlign: 'center', cursor: importing ? 'wait' : 'pointer', opacity: importing ? 0.6 : 1 }} onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--cyan)'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border2)'; }}>
-            <div style={{ fontSize: '28px', marginBottom: '8px' }}>📊</div>
-            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)', marginBottom: '4px' }}>{importing ? 'Importing…' : 'Click to select Excel file'}</div>
-            <div style={{ fontSize: '10px', color: 'var(--text-dim)' }}>.xlsx or .xls</div>
-            <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleFile} disabled={importing} />
+
+        {/* Summary view */}
+        {summary ? (
+          <div style={{ overflowY: 'auto', flex: 1, padding: '18px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+            {/* Stat row */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
+              {[
+                { label: 'Total rows', value: summary.totalRows, color: 'var(--text-dim)' },
+                { label: 'New', value: summary.imported, color: 'var(--pass)' },
+                { label: 'Updated', value: summary.updated ?? 0, color: (summary.updated ?? 0) > 0 ? 'var(--cyan)' : 'var(--text-dim)' },
+                { label: 'Auto-linked', value: summary.linked, color: summary.linked > 0 ? 'var(--cyan)' : 'var(--text-dim)' },
+              ].map(({ label, value, color }) => (
+                <div key={label} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '22px', fontWeight: 800, color, fontFamily: 'var(--font-mono)' }}>{value}</div>
+                  <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '2px', fontWeight: 600 }}>{label}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Skipped empty rows */}
+            {summary.skippedEmpty > 0 && (
+              <div style={{ background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: '8px', padding: '10px 14px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--amber)', marginBottom: '2px' }}>⚠ {summary.skippedEmpty} empty rows skipped</div>
+                <div style={{ fontSize: '10px', color: 'var(--text-dim)' }}>Rows with no Test Case Title were ignored.</div>
+              </div>
+            )}
+
+            {/* Duplicate rows */}
+            {summary.duplicateRows.length > 0 && (
+              <div style={{ background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: '8px', padding: '10px 14px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--amber)', marginBottom: '6px' }}>⚠ {summary.duplicateRows.length} duplicate TC{summary.duplicateRows.length === 1 ? '' : 's'} skipped</div>
+                <div style={{ maxHeight: '100px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  {summary.duplicateRows.map((r, i) => (
+                    <div key={i} style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>• {r}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* RF Script IDs not found */}
+            {summary.rfNotFound.length > 0 && (
+              <div style={{ background: 'rgba(220,38,38,0.06)', border: '1px solid rgba(220,38,38,0.2)', borderRadius: '8px', padding: '10px 14px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--fail)', marginBottom: '4px' }}>✕ {summary.rfNotFound.length} RF Script ID{summary.rfNotFound.length === 1 ? '' : 's'} not matched</div>
+                <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginBottom: '6px' }}>These filenames were in the sheet but no matching script was found in this project:</div>
+                <div style={{ maxHeight: '100px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  {summary.rfNotFound.map((r, i) => (
+                    <div key={i} style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', color: 'var(--fail)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>• {r}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* All good */}
+            {!hasWarnings && (
+              <div style={{ background: 'rgba(42,157,143,0.07)', border: '1px solid rgba(42,157,143,0.25)', borderRadius: '8px', padding: '10px 14px', fontSize: '11px', color: 'var(--pass)', fontWeight: 600 }}>
+                ✓ Import completed with no issues.
+              </div>
+            )}
+
+            <button onClick={onClose} style={{ marginTop: '4px', padding: '8px', background: 'var(--cyan-dim)', border: '1px solid rgba(37,99,171,0.35)', borderRadius: '7px', color: 'var(--cyan)', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}>
+              Done
+            </button>
           </div>
-        </div>
+        ) : (
+          /* Upload view */
+          <div style={{ padding: '20px 18px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-mid)', lineHeight: 1.6 }}>
+              Upload an Excel file with columns: <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--cyan)' }}>Test Case ID, Module, Feature, Test Case Title, Test Case Description, Step, Expected Result, RF Script ID</span>
+            </p>
+            <button onClick={handleDownloadTemplate} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text-dim)', fontSize: '11px', cursor: 'pointer', width: 'fit-content' }}>📄 Download template</button>
+            <div onClick={() => !importing && fileRef.current?.click()} style={{ border: '2px dashed var(--border2)', borderRadius: '8px', padding: '28px', textAlign: 'center', cursor: importing ? 'wait' : 'pointer', opacity: importing ? 0.6 : 1 }} onMouseEnter={(e) => { if (!importing) (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--cyan)'; }} onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border2)'; }}>
+              <div style={{ fontSize: '28px', marginBottom: '8px' }}>{importing ? '⏳' : '📊'}</div>
+              <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text)', marginBottom: '4px' }}>{importing ? 'Importing…' : 'Click to select Excel file'}</div>
+              <div style={{ fontSize: '10px', color: 'var(--text-dim)' }}>.xlsx or .xls</div>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleFile} disabled={importing} />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
 // ── Main page ──────────────────────────────────────────────────────────────
-type LinkFilter = 'all' | 'linked' | 'unlinked';
+type LinkFilter = 'all' | 'linked' | 'unlinked' | 'na';
 
 export default function TestCaseLibrary() {
   const { slug } = useParams<{ slug: string }>();
@@ -643,6 +829,7 @@ export default function TestCaseLibrary() {
   const bulkDeleteMutation = useBulkDeleteTcItems(projectId);
   const bulkLinkMutation = useBulkLinkTcItems(projectId);
   const bulkMoveMutation = useBulkMoveTcItems(projectId);
+  const bulkStatusMutation = useBulkSetAutomationStatus(projectId);
   const { setSelected } = useExecutionStore();
 
   const [search, setSearch] = useState('');
@@ -661,12 +848,13 @@ export default function TestCaseLibrary() {
       const q = search.toLowerCase();
       result = result.filter((i) => i.title.toLowerCase().includes(q) || (i.module ?? '').toLowerCase().includes(q) || (i.feature ?? '').toLowerCase().includes(q));
     }
-    if (linkFilter === 'linked') result = result.filter((i) => !!i.linkedScriptId);
-    if (linkFilter === 'unlinked') result = result.filter((i) => !i.linkedScriptId);
+    if (linkFilter === 'linked') result = result.filter((i) => !!i.linkedScriptId && i.automationStatus === 'IN_SCOPE');
+    if (linkFilter === 'unlinked') result = result.filter((i) => !i.linkedScriptId && i.automationStatus === 'IN_SCOPE');
+    if (linkFilter === 'na') result = result.filter((i) => i.automationStatus === 'NOT_APPLICABLE');
     return result;
   }, [items, search, linkFilter]);
 
-  // Group by Feature (stable order from first-seen in items, then filtered)
+  // Group by Feature, sorted by feature name; items within each group sorted by TC ID
   const groups = useMemo(() => {
     const map = new Map<string, TcItem[]>();
     for (const item of filteredItems) {
@@ -674,11 +862,20 @@ export default function TestCaseLibrary() {
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(item);
     }
-    return Array.from(map.entries()).map(([feature, featureItems], i) => ({
-      feature,
-      items: featureItems,
-      color: groupColor(i),
-    }));
+    return Array.from(map.entries())
+      .map(([feature, featureItems]) => ({
+        feature,
+        items: [...featureItems].sort((a, b) => naturalCompare(a.srNo, b.srNo)),
+      }))
+      .sort((a, b) => {
+        // Sort groups by the lowest TC ID in the group so order matches the Excel sheet
+        if (a.feature === 'Uncategorised') return 1;
+        if (b.feature === 'Uncategorised') return -1;
+        const aMin = a.items[0]?.srNo ?? null;
+        const bMin = b.items[0]?.srNo ?? null;
+        return naturalCompare(aMin, bMin);
+      })
+      .map(({ feature, items }, i) => ({ feature, items, color: groupColor(i) }));
   }, [filteredItems]);
 
   // On first data load collapse all groups after the first 2
@@ -748,6 +945,39 @@ export default function TestCaseLibrary() {
       toast.success(`${ids.length} test case${ids.length === 1 ? '' : 's'} linked`);
     } catch { toast.error('Bulk link failed'); }
   }
+  async function handleBulkUnlink() {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    try {
+      await bulkLinkMutation.mutateAsync({ ids, testCaseId: null });
+      toast.success(`${selectedLinkedCount} test case${selectedLinkedCount === 1 ? '' : 's'} unlinked`);
+    } catch { toast.error('Bulk unlink failed'); }
+  }
+  async function handleToggleNA(item: TcItem) {
+    const next = item.automationStatus === 'NOT_APPLICABLE' ? 'IN_SCOPE' : 'NOT_APPLICABLE';
+    try {
+      await updateMutation.mutateAsync({ id: item.id, patch: { automationStatus: next } });
+      toast.success(next === 'NOT_APPLICABLE' ? 'Marked as Not Applicable' : 'Marked as In Scope');
+    } catch { toast.error('Update failed'); }
+  }
+  async function handleBulkMarkNA() {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    try {
+      await bulkStatusMutation.mutateAsync({ ids, automationStatus: 'NOT_APPLICABLE' });
+      toast.success(`${ids.length} test case${ids.length === 1 ? '' : 's'} marked as Not Applicable`);
+      setSelectedIds(new Set());
+    } catch { toast.error('Bulk update failed'); }
+  }
+  async function handleBulkMarkInScope() {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    try {
+      await bulkStatusMutation.mutateAsync({ ids, automationStatus: 'IN_SCOPE' });
+      toast.success(`${ids.length} test case${ids.length === 1 ? '' : 's'} marked as In Scope`);
+      setSelectedIds(new Set());
+    } catch { toast.error('Bulk update failed'); }
+  }
   function handleBulkRun() {
     const linkedScriptIds = items
       .filter((i) => selectedIds.has(i.id) && i.linkedScript)
@@ -761,11 +991,32 @@ export default function TestCaseLibrary() {
     () => items.filter((i) => selectedIds.has(i.id) && !!i.linkedScript).length,
     [items, selectedIds],
   );
+  const selectedNaCount = useMemo(
+    () => items.filter((i) => selectedIds.has(i.id) && i.automationStatus === 'NOT_APPLICABLE').length,
+    [items, selectedIds],
+  );
+  const selectedInScopeCount = useMemo(
+    () => items.filter((i) => selectedIds.has(i.id) && i.automationStatus === 'IN_SCOPE').length,
+    [items, selectedIds],
+  );
 
   function expandAll() { setCollapsedGroups(new Set()); }
   function collapseAll() { setCollapsedGroups(new Set(groups.map((g) => g.feature))); }
 
-  const linkedPct = stats && stats.total > 0 ? Math.round((stats.linked / stats.total) * 100) : 0;
+  const linkedPct = stats && stats.inScope > 0 ? Math.round((stats.linked / stats.inScope) * 100) : 0;
+
+  async function handleExport() {
+    if (!projectId) return;
+    try {
+      const res = await api.get(`/projects/${projectId}/tc-items/export`, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data as Blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `tc-library-${slug ?? 'export'}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch { toast.error('Export failed'); }
+  }
 
   // Filter tab style helper
   const filterTab = (active: boolean) => ({
@@ -784,21 +1035,31 @@ export default function TestCaseLibrary() {
           { label: `📡 ${project?.name ?? slug ?? ''}`, href: `/projects/${slug}/settings` },
           { label: '📋 TC Library' },
         ]}
-        actions={<TbBtn variant="ghost" onClick={() => setShowImport(true)}>📥 Import Excel</TbBtn>}
+        actions={
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <TbBtn variant="ghost" onClick={handleExport}>📤 Export Excel</TbBtn>
+            <TbBtn variant="ghost" onClick={() => setShowImport(true)}>📥 Import Excel</TbBtn>
+          </div>
+        }
       />
 
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '14px', padding: '16px 20px 80px' }}>
         {/* Stats */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', flexShrink: 0 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px', flexShrink: 0 }}>
           <StatTile label="Total TCs" value={stats?.total ?? items.length} color="var(--cyan)" />
-          <StatTile label="Linked (Automated)" value={stats?.linked ?? 0} color="var(--pass)" sub={stats?.total ? `${linkedPct}% of total` : undefined} />
+          <StatTile label="In Scope" value={stats?.inScope ?? items.length} color="var(--cyan)" sub="eligible for automation" />
+          <StatTile label="Automated" value={stats?.linked ?? 0} color="var(--pass)" sub={stats?.inScope ? `${linkedPct}% of in-scope` : undefined} />
           <StatTile label="Unlinked" value={stats?.unlinked ?? items.length} color="var(--amber)" />
-          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: '6px', boxShadow: 'var(--shadow-card)' }}>
-            <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text)', marginBottom: '2px' }}>Automation Coverage</div>
-            <div style={{ background: 'var(--surface2)', borderRadius: '4px', height: '8px', overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${linkedPct}%`, background: linkedPct >= 80 ? 'var(--pass)' : linkedPct >= 40 ? 'var(--amber)' : 'var(--fail)', borderRadius: '4px', transition: 'width 0.4s' }} />
-            </div>
-            <div style={{ fontSize: '10px', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>{linkedPct}% linked</div>
+          <StatTile label="Not Applicable" value={stats?.notApplicable ?? 0} color="var(--text-dim)" sub="manual only" />
+        </div>
+        {/* Coverage bar */}
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '12px 18px', display: 'flex', flexDirection: 'column', gap: '6px', boxShadow: 'var(--shadow-card)', flexShrink: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text)' }}>Automation Coverage <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 400 }}>(in-scope TCs only)</span></div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 800, color: linkedPct >= 80 ? 'var(--pass)' : linkedPct >= 40 ? 'var(--amber)' : 'var(--fail)' }}>{linkedPct}%</div>
+          </div>
+          <div style={{ background: 'var(--surface2)', borderRadius: '4px', height: '8px', overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${linkedPct}%`, background: linkedPct >= 80 ? 'var(--pass)' : linkedPct >= 40 ? 'var(--amber)' : 'var(--fail)', borderRadius: '4px', transition: 'width 0.4s' }} />
           </div>
         </div>
 
@@ -813,7 +1074,34 @@ export default function TestCaseLibrary() {
                 <button style={filterTab(linkFilter === 'all')} onClick={() => setLinkFilter('all')}>All</button>
                 <button style={filterTab(linkFilter === 'linked')} onClick={() => setLinkFilter('linked')}>⚡ Linked</button>
                 <button style={filterTab(linkFilter === 'unlinked')} onClick={() => setLinkFilter('unlinked')}>Unlinked</button>
+                <button style={{ ...filterTab(linkFilter === 'na'), color: linkFilter === 'na' ? 'var(--text-dim)' : 'var(--text-dim)', background: linkFilter === 'na' ? 'rgba(107,114,128,0.15)' : 'transparent', border: linkFilter === 'na' ? '1px solid rgba(107,114,128,0.35)' : '1px solid transparent' }} onClick={() => setLinkFilter('na')}>N/A</button>
               </div>
+
+              {/* Select All */}
+              {(() => {
+                const allFilteredIds = filteredItems.map((i) => i.id);
+                const allSelected = allFilteredIds.length > 0 && allFilteredIds.every((id) => selectedIds.has(id));
+                const someSelected = !allSelected && allFilteredIds.some((id) => selectedIds.has(id));
+                return (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <div
+                      className={`tc-checkbox${allSelected ? ' checked' : someSelected ? ' indeterminate' : ''}`}
+                      style={{ fontSize: '10px', flexShrink: 0, cursor: 'pointer' }}
+                      title={allSelected ? 'Deselect all' : `Select all ${allFilteredIds.length} TCs`}
+                      onClick={() => {
+                        if (allSelected) {
+                          setSelectedIds((prev) => { const next = new Set(prev); allFilteredIds.forEach((id) => next.delete(id)); return next; });
+                        } else {
+                          setSelectedIds((prev) => { const next = new Set(prev); allFilteredIds.forEach((id) => next.add(id)); return next; });
+                        }
+                      }}
+                    >
+                      {allSelected ? '✓' : someSelected ? '–' : ''}
+                    </div>
+                    <span style={{ fontSize: '10px', color: 'var(--text-dim)', userSelect: 'none' }}>Select all</span>
+                  </div>
+                );
+              })()}
 
               {/* Expand / Collapse All */}
               <div style={{ display: 'flex', gap: '4px' }}>
@@ -867,6 +1155,7 @@ export default function TestCaseLibrary() {
                 onLink={setLinkingItem}
                 onDelete={handleDelete}
                 onRun={handleRun}
+                onToggleNA={handleToggleNA}
               />
             ))}
           </div>
@@ -878,12 +1167,16 @@ export default function TestCaseLibrary() {
         <SelectionBar
           count={selectedIds.size}
           linkedCount={selectedLinkedCount}
+          naCount={selectedNaCount}
+          inScopeCount={selectedInScopeCount}
           allFeatures={allFeatures}
           onClear={() => setSelectedIds(new Set())}
           onBulkDelete={handleBulkDelete}
           onMoveToFeature={handleMoveToFeature}
           onOpenLinkModal={() => setShowBulkLinkModal(true)}
           onBulkRun={handleBulkRun}
+          onBulkMarkNA={handleBulkMarkNA}
+          onBulkMarkInScope={handleBulkMarkInScope}
         />
       )}
 
@@ -894,8 +1187,10 @@ export default function TestCaseLibrary() {
       {showBulkLinkModal && (
         <BulkLinkScriptModal
           count={selectedIds.size}
+          linkedCount={selectedLinkedCount}
           scripts={scriptOptions}
           onSelect={handleBulkLinkScript}
+          onUnlink={handleBulkUnlink}
           onClose={() => setShowBulkLinkModal(false)}
         />
       )}

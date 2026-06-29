@@ -9,8 +9,6 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && apt-g
     libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 \
     libx11-6 libx11-xcb1 libxcb1 libxext6 libxss1 libxtst6 \
     fonts-liberation libappindicator3-1 libdbus-glib-1-2 xdg-utils \
-    # Firefox deps
-    libgtk-3-0 libdbus-1-3 libxt6 \
     # VNC / display + video recording
     xvfb x11vnc novnc python3-websockify openbox x11-apps xauth ffmpeg \
     # Node 20
@@ -33,15 +31,6 @@ RUN CFT_VER=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/las
   && chmod +x /usr/local/bin/chromedriver /opt/chrome-linux64/chrome \
   && rm -rf /tmp/chrome.zip /tmp/cd.zip /tmp/cd/ \
   && google-chrome --version && chromedriver --version
-
-# ── Firefox ESR ─────────────────────────────────────────────────────────────
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends firefox-esr \
-  && rm -rf /var/lib/apt/lists/*
-
-# ── GeckoDriver (pinned stable) ──────────────────────────────────────────────
-RUN curl -sL "https://github.com/mozilla/geckodriver/releases/download/v0.36.0/geckodriver-v0.36.0-linux64.tar.gz" \
-     | tar -xz -C /usr/local/bin/ \
-  && chmod +x /usr/local/bin/geckodriver
 
 # ── Python RF + SeleniumLibrary ──────────────────────────────────────────────
 RUN pip install --no-cache-dir \

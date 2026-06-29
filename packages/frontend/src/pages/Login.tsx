@@ -126,7 +126,7 @@ export default function Login() {
             textAlign: 'center',
           }}
         >
-          QA Infinity
+          QA Automation Suite Runner
         </h1>
 
         <p
@@ -251,7 +251,7 @@ export default function Login() {
               Welcome back
             </h2>
             <p style={{ fontSize: '13px', color: 'var(--text-mid)', marginTop: '6px' }}>
-              Enter your credentials to access QA Infinity.
+              Enter your credentials to access QA Automation Suite Runner.
             </p>
           </div>
 
@@ -426,7 +426,7 @@ export default function Login() {
                 textAlign: 'center',
               }}
             >
-              6D Technologies · QA Infinity
+              6D Technologies · QA Automation Suite Runner
             </p>
           </div>
         </div>

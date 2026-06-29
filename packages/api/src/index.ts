@@ -170,12 +170,20 @@ app.get('/health', async (_req, res) => {
     healthy = false;
   }
 
+  const replicas    = parseInt(process.env.RUNNER_REPLICAS    ?? '1', 10);
+  const concurrency = parseInt(process.env.RUNNER_CONCURRENCY ?? '4', 10);
+
   res.status(healthy ? 200 : 503).json({
     status: healthy ? 'ok' : 'degraded',
     version: '1.0.0',
     timestamp: new Date(),
     uptime: process.uptime(),
     checks,
+    capacity: {
+      runnerReplicas:    replicas,
+      runnerConcurrency: concurrency,
+      maxSlots:          replicas * concurrency,
+    },
   });
 });
 

@@ -10,8 +10,8 @@ export default function BrandBanner() {
       <div className="bb-left">
         <span className="bb-icon">∞</span>
         <div className="bb-text">
-          <div className="bb-subtitle">Autonomous Test Automation Platform</div>
-          <div className="bb-title">QA Infinity</div>
+          <div className="bb-subtitle">Test Automation Platform</div>
+          <div className="bb-title">QA Automation Suite Runner</div>
         </div>
       </div>
 

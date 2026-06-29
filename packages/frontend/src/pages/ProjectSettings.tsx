@@ -1854,7 +1854,7 @@ function UIScannerTab() {
       >
         <ScanLine size={18} color="var(--cyan)" style={{ marginTop: '1px', flexShrink: 0 }} />
         <p style={{ fontSize: '12px', color: 'var(--text-mid)', lineHeight: 1.55 }}>
-          No UI scan has been run yet for this project. Running a scan lets QA Infinity learn the real
+          No UI scan has been run yet for this project. Running a scan lets QAASR learn the real
           navigation, login flow, and page locators of your application.
         </p>
       </div>

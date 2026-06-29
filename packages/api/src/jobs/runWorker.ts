@@ -28,9 +28,31 @@ class Semaphore {
   }
 }
 
+// ── Runner pool — round-robin across all configured runner instances ────────
+// RUNNER_REPLICAS=1 → single URL (RUNNER_URL or default)
+// RUNNER_REPLICAS>1 → builds http://qaasr-runner-1:5001 .. http://qaasr-runner-N:5001
+const _replicas    = parseInt(process.env.RUNNER_REPLICAS    ?? '1', 10);
+const _concurrency = parseInt(process.env.RUNNER_CONCURRENCY ?? '4', 10);
+
+function buildRunnerPool(): string[] {
+  if (_replicas <= 1) {
+    return [process.env.RUNNER_URL ?? 'http://qaasr-runner:5001'];
+  }
+  const base = process.env.RUNNER_BASE_URL ?? 'http://qaasr-runner';
+  return Array.from({ length: _replicas }, (_, i) => `${base}-${i + 1}:5001`);
+}
+const runnerPool = buildRunnerPool();
+let   _rrIndex   = 0;
+function nextRunnerUrl(): string {
+  const url = runnerPool[_rrIndex % runnerPool.length];
+  _rrIndex++;
+  return url;
+}
+
 // Module-level semaphore caps total concurrent /run calls across all BullMQ jobs
-// so we never request more display slots than the runner pool has available (CONC-002).
-const MAX_RUNNER_DISPLAYS = parseInt(process.env.MAX_RUNNER_DISPLAYS ?? '8', 10);
+// so we never exceed total display slots across all runner instances (CONC-002).
+// Total slots = RUNNER_REPLICAS * RUNNER_CONCURRENCY (defaults: 1 * 4 = 4).
+const MAX_RUNNER_DISPLAYS = parseInt(process.env.MAX_RUNNER_DISPLAYS ?? String(_replicas * _concurrency), 10);
 const runnerDisplaySem = new Semaphore(MAX_RUNNER_DISPLAYS);
 
 // ── Main job processor ─────────────────────────────────────────────────────
@@ -396,7 +418,7 @@ async function spawnRunner(
   externalSignal?: AbortSignal,
 ): Promise<SpawnResult> {
   const start = Date.now();
-  const runnerUrl = process.env.RUNNER_URL ?? 'http://qaasr-runner:5001';
+  const runnerUrl = nextRunnerUrl();
 
   const controller = new AbortController();
   const fetchTimeout = setTimeout(() => controller.abort(), 960_000);
