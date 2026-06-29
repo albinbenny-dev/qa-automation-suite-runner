@@ -526,15 +526,18 @@ const server = http.createServer(async (req, res) => {
 
     req.on('close', () => {
       if (!procDone && !proc.killed) {
-        proc.kill('SIGTERM');
-        const cancelKillTimer = setTimeout(() => { if (!proc.killed) proc.kill('SIGKILL'); }, 3000);
-        proc.once('close', () => {
-          clearTimeout(cancelKillTimer);
-          try { fs.rmSync(effectiveOutputDir, { recursive: true, force: true }); } catch {}
-        });
+        // Give robot up to 60s to finish its teardown (e.g. writing video, closing browser)
+        // before escalating to SIGKILL. Never delete effectiveOutputDir here — the
+        // client disconnecting does not mean the run was cancelled; teardown may still
+        // produce log.html and output.xml that the runWorker will pick up.
+        const gracefulKillTimer = setTimeout(() => {
+          if (!proc.killed) proc.kill('SIGTERM');
+          const cancelKillTimer = setTimeout(() => { if (!proc.killed) proc.kill('SIGKILL'); }, 5000);
+          proc.once('close', () => { clearTimeout(cancelKillTimer); releaseOnce(); });
+        }, 60_000);
+        proc.once('close', () => { clearTimeout(gracefulKillTimer); releaseOnce(); });
         clearTimeout(killTimer);
         clearInterval(heartbeatTimer);
-        releaseOnce();
       }
     });
 
