@@ -48,7 +48,8 @@ export interface RunJobPayload {
 export async function addRunJob(payload: RunJobPayload): Promise<void> {
   await testRunQueue.add('run', payload, {
     jobId: payload.runId,
-    attempts: 1,
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 5000 },
     removeOnComplete: 100,
     removeOnFail: 50,
   });

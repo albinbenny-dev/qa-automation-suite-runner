@@ -25,8 +25,14 @@ const NOVNC_WEB_DIR  = '/usr/share/novnc';
 const displayPool = [];
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-function waitForPort(port, onReady) {
+function waitForPort(port, onReady, maxRetries = 150) {
+  let retries = 0;
   const attempt = () => {
+    if (retries++ >= maxRetries) {
+      console.error(`[qa-runner] waitForPort: port ${port} not ready after ${maxRetries} attempts — giving up`);
+      onReady();
+      return;
+    }
     const sock = new net.Socket();
     sock.setTimeout(600);
     sock.on('connect', () => { sock.destroy(); onReady(); });
@@ -57,12 +63,16 @@ function spawnLogged(cmd, args, opts = {}) {
   return p;
 }
 
-function waitForXvfb(display, onReady) {
+function waitForXvfb(display, onReady, maxRetries = 100) {
   const num    = display.replace(':', '');
   const socket = `/tmp/.X11-unix/X${num}`;
+  let retries  = 0;
   const poll   = () => {
     if (fs.existsSync(socket)) {
       console.log(`[qa-runner] Xvfb socket ready: ${socket}`);
+      onReady();
+    } else if (retries++ >= maxRetries) {
+      console.error(`[qa-runner] waitForXvfb: ${socket} not ready after ${maxRetries} attempts — giving up`);
       onReady();
     } else {
       setTimeout(poll, 300);
@@ -362,33 +372,7 @@ const server = http.createServer(async (req, res) => {
     fs.mkdirSync(effectiveOutputDir, { recursive: true });
     const xmlOutputPath = path.join(effectiveOutputDir, 'output.xml');
 
-    // RF listener for auto-screenshot on teardown
-    const listenerCode = [
-      'import os as _os',
-      '',
-      'class QaRunnerListener:',
-      '    ROBOT_LISTENER_API_VERSION = 2',
-      '',
-      '    def __init__(self, output_dir):',
-      '        self.output_dir = output_dir',
-      '        self._screenshot_done = False',
-      '',
-      '    def start_test(self, name, attrs):',
-      '        self._screenshot_done = False',
-      '',
-      '    def start_keyword(self, name, attrs):',
-      '        if not self._screenshot_done and attrs.get("type") == "teardown":',
-      '            self._screenshot_done = True',
-      '            try:',
-      '                from robot.libraries.BuiltIn import BuiltIn',
-      '                screenshot_path = _os.path.join(self.output_dir, "screenshot.png")',
-      '                BuiltIn().run_keyword("Capture Page Screenshot", screenshot_path)',
-      '            except Exception:',
-      '                pass',
-    ].join('\n');
-
-    const listenerPath = path.join(effectiveOutputDir, 'QaRunnerListener.py');
-    try { fs.writeFileSync(listenerPath, listenerCode, 'utf8'); } catch { /* non-fatal */ }
+    const listenerPath = SHARED_LISTENER_PATH;
 
     const seleniumBrowser = (browser === 'chrome' || browser === 'chromium') ? 'chrome' : 'firefox';
 
@@ -477,10 +461,12 @@ const server = http.createServer(async (req, res) => {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
+    let hardKillTimer = null;
     const killTimer = setTimeout(() => {
       sendLine({ type: 'log', text: `[runner] Robot script exceeded ${HARD_KILL_MS / 1000}s hard limit — killing` });
       proc.kill('SIGTERM');
-      setTimeout(() => proc.kill('SIGKILL'), 5_000);
+      hardKillTimer = setTimeout(() => { if (!proc.killed) proc.kill('SIGKILL'); }, 5_000);
+      proc.once('close', () => clearTimeout(hardKillTimer));
     }, HARD_KILL_MS);
 
     const heartbeatTimer = setInterval(() => {
@@ -499,7 +485,8 @@ const server = http.createServer(async (req, res) => {
     req.on('close', () => {
       if (!procDone && !proc.killed) {
         proc.kill('SIGTERM');
-        setTimeout(() => { if (!proc.killed) proc.kill('SIGKILL'); }, 3000);
+        const cancelKillTimer = setTimeout(() => { if (!proc.killed) proc.kill('SIGKILL'); }, 3000);
+        proc.once('close', () => clearTimeout(cancelKillTimer));
         clearTimeout(killTimer);
         clearInterval(heartbeatTimer);
         releaseOnce();
@@ -547,7 +534,8 @@ const server = http.createServer(async (req, res) => {
           });
         });
         try { ffmpegToStop.kill('SIGTERM'); } catch { try { ffmpegToStop.kill('SIGKILL'); } catch {} }
-        setTimeout(() => { try { ffmpegToStop.kill('SIGKILL'); } catch {} }, 8_000);
+        const ffmpegKillTimer = setTimeout(() => { try { ffmpegToStop.kill('SIGKILL'); } catch {} }, 8_000);
+        ffmpegToStop.once('exit', () => clearTimeout(ffmpegKillTimer));
         sendLine({ type: 'log', text: '[runner] 🎬 Video recording stopped — processing for playback…' });
       }
 
@@ -595,9 +583,65 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
+// ── Graceful shutdown ─────────────────────────────────────────────────────
+// Write the RF listener once at startup to a shared path so it is never
+// re-written per-run (fixes DISK-003 / LEAK-007).
+const SHARED_LISTENER_PATH = '/tmp/QaRunnerListener.py';
+
+function writeSharedListener() {
+  const listenerCode = [
+    'import os as _os',
+    '',
+    'class QaRunnerListener:',
+    '    ROBOT_LISTENER_API_VERSION = 2',
+    '',
+    '    def __init__(self, output_dir):',
+    '        self.output_dir = output_dir',
+    '        self._screenshot_done = False',
+    '',
+    '    def start_test(self, name, attrs):',
+    '        self._screenshot_done = False',
+    '',
+    '    def start_keyword(self, name, attrs):',
+    '        if not self._screenshot_done and attrs.get("type") == "teardown":',
+    '            self._screenshot_done = True',
+    '            try:',
+    '                from robot.libraries.BuiltIn import BuiltIn',
+    '                screenshot_path = _os.path.join(self.output_dir, "screenshot.png")',
+    '                BuiltIn().run_keyword("Capture Page Screenshot", screenshot_path)',
+    '            except Exception:',
+    '                pass',
+  ].join('\n');
+  try { fs.writeFileSync(SHARED_LISTENER_PATH, listenerCode, 'utf8'); } catch { /* non-fatal */ }
+}
+
+function gracefulShutdown(signal) {
+  console.log(`[qa-runner] Received ${signal} — shutting down gracefully`);
+  server.close(() => {
+    console.log('[qa-runner] HTTP server closed');
+  });
+  for (const slot of displayPool) {
+    if (slot.ffmpegProc) {
+      try { slot.ffmpegProc.kill('SIGTERM'); } catch {}
+      slot.ffmpegProc = null;
+    }
+    if (slot.xvfbProc) {
+      try { slot.xvfbProc.kill('SIGTERM'); } catch {}
+    }
+  }
+  setTimeout(() => {
+    console.log('[qa-runner] Shutdown grace period expired — exiting');
+    process.exit(0);
+  }, 30_000).unref();
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
+
 server.listen(PORT, async () => {
   console.log(`[qa-runner] HTTP server listening on port ${PORT}`);
   console.log(`[qa-runner] Robot Framework binary: ${ROBOT_BIN} (exists: ${fs.existsSync(ROBOT_BIN)})`);
+  writeSharedListener();
   await startDisplayPool();
   await startVncStack();
 });

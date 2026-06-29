@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma.js';
 import { emitToRun } from '../lib/socket.js';
 import type { RunJobPayload } from '../lib/queue.js';
 
-const ARTIFACTS_ROOT = process.env.ARTIFACTS_PATH ?? '/artifacts';
+const ARTIFACTS_ROOT = process.env.ARTIFACTS_ROOT ?? process.env.ARTIFACTS_PATH ?? '/artifacts';
 
 // ── RF report shape (from parseRobotXmlReport in runner/index.js) ──────────
 interface RFReport {
@@ -535,4 +535,12 @@ export function startRunWorker(): void {
   });
 
   console.log('[run-worker] Worker started, listening on queue "test-runs"');
+
+  runWorkerInstance = worker;
+}
+
+let runWorkerInstance: import('bullmq').Worker | null = null;
+
+export function getRunWorker(): import('bullmq').Worker | null {
+  return runWorkerInstance;
 }

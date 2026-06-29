@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { prisma } from '../lib/prisma.js';
 
-const ARTIFACTS_ROOT = process.env.ARTIFACTS_PATH ?? '/artifacts';
+const ARTIFACTS_ROOT = process.env.ARTIFACTS_ROOT ?? process.env.ARTIFACTS_PATH ?? '/artifacts';
 
 function daysAgo(n: number): Date {
   return new Date(Date.now() - n * 86_400_000);
@@ -12,10 +12,11 @@ function daysAgo(n: number): Date {
 function getConfig() {
   return {
     runResultDays:    parseInt(process.env.RETENTION_RUNRESULT_DAYS   ?? '90',  10),
+    runDays:          parseInt(process.env.RETENTION_RUN_DAYS         ?? '180', 10),
     healDays:         parseInt(process.env.RETENTION_HEAL_DAYS        ?? '30',  10),
     llmCallDays:      parseInt(process.env.RETENTION_LLMCALL_DAYS     ?? '90',  10),
     artifactsDays:    parseInt(process.env.RETENTION_ARTIFACTS_DAYS   ?? '30',  10),
-    videoDays:        parseInt(process.env.RETENTION_VIDEO_DAYS       ?? '7',   10),
+    videoDays:        parseInt(process.env.RETENTION_VIDEO_DAYS       ?? '30',  10),
     traceDays:        parseInt(process.env.RETENTION_TRACE_DAYS       ?? '14',  10),
     screenshotDays:   parseInt(process.env.RETENTION_SCREENSHOT_DAYS  ?? '30',  10),
     maxRunsPerProject: parseInt(process.env.MAX_RUNS_PER_PROJECT      ?? '500', 10),
@@ -33,6 +34,16 @@ async function runDbRetention(): Promise<void> {
     where: { createdAt: { lt: runResultCutoff } },
   });
   const healCount = 0, traceCount = 0, llmCount = 0;
+
+  // Step 2 — Delete terminal Run rows older than RETENTION_RUN_DAYS.
+  //          This cascades to any remaining RunResult children and cleans up ghost rows.
+  const runCutoff = daysAgo(cfg.runDays);
+  const { count: runAgeCount } = await prisma.run.deleteMany({
+    where: {
+      createdAt: { lt: runCutoff },
+      status: { notIn: ['RUNNING', 'PENDING'] },
+    },
+  });
 
   // Step 5 — Apply MAX_RUNS_PER_PROJECT hard cap.
   //          Only terminal runs are eligible; in-flight runs are never deleted.
@@ -58,7 +69,7 @@ async function runDbRetention(): Promise<void> {
   }
 
   console.log(
-    `[retention] DB sweep — heals: ${healCount}, traces: ${traceCount}, runResults: ${rrCount}, llmCalls: ${llmCount}, runs(cap): ${runCapCount}`,
+    `[retention] DB sweep — heals: ${healCount}, traces: ${traceCount}, runResults: ${rrCount}, llmCalls: ${llmCount}, runs(age): ${runAgeCount}, runs(cap): ${runCapCount}`,
   );
 }
 
@@ -106,6 +117,7 @@ async function runArtifactRetention(): Promise<void> {
   // Per-extension thresholds for fine-grained file sweeps within recent run dirs.
   const extThresholds: Record<string, number> = {
     '.webm': now - cfg.videoDays      * 86_400_000,
+    '.mp4':  now - cfg.videoDays      * 86_400_000,
     '.zip':  now - cfg.traceDays      * 86_400_000,
     '.png':  now - cfg.screenshotDays * 86_400_000,
     '.jpg':  now - cfg.screenshotDays * 86_400_000,

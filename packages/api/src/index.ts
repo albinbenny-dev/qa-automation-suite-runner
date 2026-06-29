@@ -10,7 +10,7 @@ import apiRouter from './routes/index.js';
 import { setRunsNamespace, setProjectsNamespace } from './lib/socket.js';
 import { prisma } from './lib/prisma.js';
 import { loadSchedules } from './lib/scheduler.js';
-import { startRunWorker } from './jobs/runWorker.js';
+import { startRunWorker, getRunWorker } from './jobs/runWorker.js';
 import { startRetentionSchedule } from './jobs/retentionWorker.js';
 
 const app = express();
@@ -155,12 +155,27 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // ── Health check ───────────────────────────────────────────────────────────
-app.get('/health', (_req, res) => {
-  res.json({
-    status: 'ok',
+app.get('/health', async (_req, res) => {
+  const checks: Record<string, string> = {};
+  let healthy = true;
+
+  try {
+    await Promise.race([
+      prisma.$queryRaw`SELECT 1`,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
+    ]);
+    checks['db'] = 'ok';
+  } catch {
+    checks['db'] = 'unreachable';
+    healthy = false;
+  }
+
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'ok' : 'degraded',
     version: '1.0.0',
     timestamp: new Date(),
     uptime: process.uptime(),
+    checks,
   });
 });
 
@@ -227,3 +242,35 @@ httpServer.listen(PORT, () => {
     startRetentionSchedule();
   })();
 });
+
+// ── Graceful shutdown ──────────────────────────────────────────────────────
+function gracefulShutdown(signal: string): void {
+  console.log(`[qa-api] Received ${signal} — shutting down gracefully`);
+
+  const worker = getRunWorker();
+  const shutdown = async () => {
+    if (worker) {
+      try {
+        await worker.close();
+        console.log('[qa-api] BullMQ worker drained');
+      } catch (err) {
+        console.error('[qa-api] Worker close error:', (err as Error).message);
+      }
+    }
+    await prisma.$disconnect();
+    httpServer.close(() => {
+      console.log('[qa-api] HTTP server closed — exiting');
+      process.exit(0);
+    });
+  };
+
+  void shutdown();
+
+  setTimeout(() => {
+    console.error('[qa-api] Shutdown grace period expired — force exiting');
+    process.exit(1);
+  }, 30_000).unref();
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
