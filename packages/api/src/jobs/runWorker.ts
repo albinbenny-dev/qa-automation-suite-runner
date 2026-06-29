@@ -29,8 +29,11 @@ class Semaphore {
 }
 
 // Module-level semaphore caps total concurrent /run calls across all BullMQ jobs
-// so we never request more display slots than the runner pool has available (CONC-002).
-const MAX_RUNNER_DISPLAYS = parseInt(process.env.MAX_RUNNER_DISPLAYS ?? '8', 10);
+// so we never exceed total display slots across all runner instances (CONC-002).
+// Total slots = RUNNER_REPLICAS * RUNNER_CONCURRENCY (defaults: 1 * 4 = 4).
+const _replicas    = parseInt(process.env.RUNNER_REPLICAS    ?? '1', 10);
+const _concurrency = parseInt(process.env.RUNNER_CONCURRENCY ?? '4', 10);
+const MAX_RUNNER_DISPLAYS = parseInt(process.env.MAX_RUNNER_DISPLAYS ?? String(_replicas * _concurrency), 10);
 const runnerDisplaySem = new Semaphore(MAX_RUNNER_DISPLAYS);
 
 // ── Main job processor ─────────────────────────────────────────────────────

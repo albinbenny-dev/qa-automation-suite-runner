@@ -14,7 +14,7 @@ const SCRIPTS_DIR = '/scripts';
 // display (noVNC live view). All displays are started on boot; each /run
 // request acquires one exclusively, so parallel test cases each record their
 // own screen without contention.
-const MAX_DISPLAYS   = 8;   // supports up to 8 parallel workers
+const MAX_DISPLAYS   = parseInt(process.env.RUNNER_CONCURRENCY ?? '4', 10);
 const BASE_DISPLAY   = 99;  // :99, :100, :101, …
 const VNC_DISPLAY    = ':99';
 const VNC_PORT       = 5900;
@@ -156,8 +156,10 @@ async function startDisplayPool() {
 async function startVncStack() {
   console.log('[qa-runner] Checking VNC stack on display ' + VNC_DISPLAY);
 
-  const vncPassword = process.env.VNC_PASSWORD || process.env.RUNNER_SECRET || null;
-  const vncAuthArgs = vncPassword ? ['-passwd', vncPassword] : ['-nopw'];
+  // VNC RFB auth is limited to 8 chars — truncate here so x11vnc never sees a longer string
+  const rawVncPassword = process.env.VNC_PASSWORD || process.env.RUNNER_SECRET || null;
+  const vncPassword    = rawVncPassword ? rawVncPassword.slice(0, 8) : null;
+  const vncAuthArgs    = vncPassword ? ['-passwd', vncPassword] : ['-nopw'];
 
   const vncAlive = await checkPort(VNC_PORT);
   if (vncAlive) {
@@ -374,6 +376,7 @@ const server = http.createServer(async (req, res) => {
     const pageObjectsDir = path.join(projectRoot, 'Resource', 'PageObjects');
     const hasHierarchy   = fs.existsSync(path.join(projectRoot, 'Resource'));
 
+    const copiedResourceFiles = [];
     if (!hasHierarchy) {
       const slugResourcesDir = projectSlug
         ? path.join(SCRIPTS_DIR, projectSlug, 'resources')
@@ -383,7 +386,6 @@ const server = http.createServer(async (req, res) => {
         ? slugResourcesDir
         : (fs.existsSync(cuidResourcesDir) ? cuidResourcesDir : null);
 
-      const copiedResourceFiles = [];
       if (resourcesSrcDir) {
         try {
           for (const rf of fs.readdirSync(resourcesSrcDir)) {
@@ -475,9 +477,11 @@ const server = http.createServer(async (req, res) => {
         videoPath      = null;
         displaySlot.ffmpegProc = null;
       });
-      ffmpegProc.on('exit', (code) => {
+      ffmpegProc.on('exit', (code, signal) => {
         displaySlot.ffmpegProc = null;
-        if (code !== 0 && code !== null && thisRunRecords) {
+        // code=255 and signal='SIGTERM'/'SIGKILL' are expected when we stop the recording intentionally.
+        const intentional = code === 255 || signal === 'SIGTERM' || signal === 'SIGKILL';
+        if (!intentional && code !== 0 && code !== null && thisRunRecords) {
           sendLine({ type: 'log', text: `[runner] ⚠ ffmpeg exited with code ${code} — video may be missing` });
         }
       });
@@ -603,7 +607,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       sendLine({ type: 'done', exitCode: exitCode ?? 1, reportData, screenshotPath, videoPath, errorSnippet: errorLines || null });
-      res.end();
+      try { res.end(); } catch { /* socket already gone */ }
     });
 
     proc.on('error', (err) => {
@@ -611,7 +615,7 @@ const server = http.createServer(async (req, res) => {
       clearInterval(heartbeatTimer);
       releaseOnce();
       sendLine({ type: 'done', exitCode: 1, reportData: null, error: err.message });
-      res.end();
+      try { res.end(); } catch { /* socket already gone */ }
     });
 
     return;
@@ -677,10 +681,21 @@ function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 
+// Prevent unhandled async rejections from crashing the runner process.
+// Async event callbacks (e.g. proc.on('close', async ...)) can reject if
+// the response socket closes just before res.end() is called.
+process.on('unhandledRejection', (reason) => {
+  console.error('[qa-runner] Unhandled rejection (non-fatal):', reason);
+});
+
 server.listen(PORT, async () => {
   console.log(`[qa-runner] HTTP server listening on port ${PORT}`);
   console.log(`[qa-runner] Robot Framework binary: ${ROBOT_BIN} (exists: ${fs.existsSync(ROBOT_BIN)})`);
   writeSharedListener();
   await startDisplayPool();
-  await startVncStack();
+  try {
+    await startVncStack();
+  } catch (err) {
+    console.error('[qa-runner] VNC stack failed to start (non-fatal):', err.message);
+  }
 });

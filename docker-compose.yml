@@ -92,8 +92,10 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@qaasr-redis:6379
       - DATABASE_URL=postgresql://${POSTGRES_USER:-qasr}:${POSTGRES_PASSWORD}@qaasr-postgres:5432/${POSTGRES_DB:-qasr}
       - CORS_ORIGIN=http://localhost:3000
-      - RUNNER_URL=http://qaasr-runner:5001
-      - RUNNER_PRIMARY_URL=http://qaasr-runner:5001
+      - RUNNER_URL=${RUNNER_URL:-http://qaasr-runner:5001}
+      - RUNNER_PRIMARY_URL=${RUNNER_URL:-http://qaasr-runner:5001}
+      - RUNNER_REPLICAS=${RUNNER_REPLICAS:-1}
+      - RUNNER_CONCURRENCY=${RUNNER_CONCURRENCY:-4}
       - SCRIPTS_ROOT=/scripts
       - ARTIFACTS_ROOT=/artifacts
     depends_on:
@@ -137,6 +139,7 @@ services:
       - TZ=Asia/Kolkata
       - API_URL=http://qaasr-api:4000
       - SE_AVOID_STATS=true
+      - RUNNER_CONCURRENCY=${RUNNER_CONCURRENCY:-4}
     depends_on:
       qaasr-api:
         condition: service_healthy
