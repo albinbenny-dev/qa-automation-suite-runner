@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 export interface TcItem {
   id: string;
   projectId: string;
-  srNo: number | null;
+  srNo: string | null;
   module: string | null;
   feature: string | null;
   title: string;
@@ -13,6 +13,7 @@ export interface TcItem {
   expectedResult: string | null;
   linkedScriptId: string | null;
   linkedScript: { id: string; tcId: string; title: string; useCaseTag: string | null } | null;
+  automationStatus: 'IN_SCOPE' | 'NOT_APPLICABLE';
   createdAt: string;
   updatedAt: string;
 }
@@ -21,6 +22,8 @@ export interface TcItemStats {
   total: number;
   linked: number;
   unlinked: number;
+  notApplicable: number;
+  inScope: number;
 }
 
 const ITEMS_KEY = (pid: string) => ['tc-items', pid];
@@ -48,13 +51,24 @@ export function useTcItemStats(projectId: string | undefined) {
   });
 }
 
+export interface ImportResult {
+  imported: number;
+  updated: number;
+  linked: number;
+  skippedEmpty: number;
+  duplicateRows: string[];
+  rfNotFound: string[];
+  totalRows: number;
+  alreadyExists: number;
+}
+
 export function useImportTcItems(projectId: string | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (file: File) => {
       const form = new FormData();
       form.append('file', file);
-      const res = await api.post<{ imported: number }>(`/projects/${projectId}/tc-items/import`, form, {
+      const res = await api.post<ImportResult>(`/projects/${projectId}/tc-items/import`, form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       return res.data;
@@ -127,6 +141,19 @@ export function useBulkMoveTcItems(projectId: string | undefined) {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ITEMS_KEY(projectId ?? '') });
+    },
+  });
+}
+
+export function useBulkSetAutomationStatus(projectId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ ids, automationStatus }: { ids: string[]; automationStatus: 'IN_SCOPE' | 'NOT_APPLICABLE' }) => {
+      await api.post(`/projects/${projectId}/tc-items/bulk-set-automation-status`, { ids, automationStatus });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ITEMS_KEY(projectId ?? '') });
+      qc.invalidateQueries({ queryKey: STATS_KEY(projectId ?? '') });
     },
   });
 }

@@ -201,9 +201,10 @@ const TRIGGER_META: Record<string, { label: string; color: string; bg: string }>
 // ── Active run progress card ───────────────────────────────────────────────
 
 function ActiveRunCard({ run }: { run: RunListItem }) {
-  const passed  = run.results.filter(r => r.status === 'PASSED').length;
-  const failed  = run.results.filter(r => r.status === 'FAILED').length;
-  const skipped = run.results.filter(r => r.status === 'SKIPPED').length;
+  const results = run.results ?? [];
+  const passed  = results.filter(r => r.status === 'PASSED').length;
+  const failed  = results.filter(r => r.status === 'FAILED').length;
+  const skipped = results.filter(r => r.status === 'SKIPPED').length;
   const total   = run._count.results;
   const done    = passed + failed + skipped;
   const progress = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -1379,8 +1380,9 @@ function RecentRunsTable({ runs, loading }: { runs: RunListItem[]; loading: bool
         </thead>
         <tbody>
           {runs.map(run => {
-            const passed = run.results.filter(r => r.status === 'PASSED').length;
-            const failed = run.results.filter(r => r.status === 'FAILED').length;
+            const _results = run.results ?? [];
+            const passed = _results.filter(r => r.status === 'PASSED').length;
+            const failed = _results.filter(r => r.status === 'FAILED').length;
             return (
               <tr key={run.id} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '7px 10px', color: 'var(--text)', fontWeight: 500, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{run.name}</td>

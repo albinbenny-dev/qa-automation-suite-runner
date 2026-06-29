@@ -15,6 +15,7 @@ function getConfig() {
     runDays:          parseInt(process.env.RETENTION_RUN_DAYS         ?? '180', 10),
     healDays:         parseInt(process.env.RETENTION_HEAL_DAYS        ?? '30',  10),
     llmCallDays:      parseInt(process.env.RETENTION_LLMCALL_DAYS     ?? '90',  10),
+    reportDays:       parseInt(process.env.RETENTION_REPORT_DAYS      ?? '90',  10),
     artifactsDays:    parseInt(process.env.RETENTION_ARTIFACTS_DAYS   ?? '30',  10),
     videoDays:        parseInt(process.env.RETENTION_VIDEO_DAYS       ?? '30',  10),
     traceDays:        parseInt(process.env.RETENTION_TRACE_DAYS       ?? '14',  10),
@@ -28,12 +29,18 @@ function getConfig() {
 async function runDbRetention(): Promise<void> {
   const cfg = getConfig();
   const runResultCutoff = daysAgo(cfg.runResultDays);
+  const reportCutoff    = daysAgo(cfg.reportDays);
 
   // Step 1 — Delete old RunResults.
   const { count: rrCount } = await prisma.runResult.deleteMany({
     where: { createdAt: { lt: runResultCutoff } },
   });
   const healCount = 0, traceCount = 0, llmCount = 0;
+
+  // Step 1b — Delete old Reports (aiAnalysis JSON can be large; trim independently of parent Run).
+  const { count: reportCount } = await prisma.report.deleteMany({
+    where: { createdAt: { lt: reportCutoff } },
+  });
 
   // Step 2 — Delete terminal Run rows older than RETENTION_RUN_DAYS.
   //          This cascades to any remaining RunResult children and cleans up ghost rows.
@@ -69,7 +76,7 @@ async function runDbRetention(): Promise<void> {
   }
 
   console.log(
-    `[retention] DB sweep — heals: ${healCount}, traces: ${traceCount}, runResults: ${rrCount}, llmCalls: ${llmCount}, runs(age): ${runAgeCount}, runs(cap): ${runCapCount}`,
+    `[retention] DB sweep — heals: ${healCount}, traces: ${traceCount}, runResults: ${rrCount}, llmCalls: ${llmCount}, reports: ${reportCount}, runs(age): ${runAgeCount}, runs(cap): ${runCapCount}`,
   );
 }
 

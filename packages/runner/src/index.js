@@ -460,7 +460,10 @@ const server = http.createServer(async (req, res) => {
         '-tune', 'stillimage',
         '-pix_fmt', 'yuv420p',
         videoPath,
-      ], { stdio: ['pipe', 'pipe', 'pipe'] });
+      ], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: Object.assign({}, process.env, { DISPLAY: assignedDisplay }),
+      });
 
       displaySlot.ffmpegProc = ffmpegProc;
 

@@ -314,6 +314,17 @@ export default function Execution() {
 
   const isRunning = socketStatus === 'running' || socketStatus === 'connecting';
 
+  // ── Queue capacity ────────────────────────────────────────────────────────
+  const [maxSlots, setMaxSlots] = useState<number>(4);
+  useEffect(() => {
+    fetch('/health').then(r => r.json()).then(d => {
+      if (d?.capacity?.maxSlots) setMaxSlots(d.capacity.maxSlots);
+    }).catch(() => {});
+  }, []);
+  const MAX_QUEUE   = maxSlots + 3;
+  const queueDepth  = activeRuns.length;
+  const queueFull   = queueDepth >= MAX_QUEUE;
+
   // ── Derived data ──────────────────────────────────────────────────────────
   const allTCs: TestCase[] = tcData?.testCases ?? [];
   const scriptedTcIds = useMemo(() => {
@@ -593,22 +604,25 @@ export default function Execution() {
               <Stepper value={parallelWorkers} onChange={updateWorkers} max={16} />
               {canWrite && <button
                 onClick={handleRunNow}
-                disabled={isRunning || createRun.isPending || selectedTcIds.size === 0}
+                disabled={queueFull || createRun.isPending || selectedTcIds.size === 0}
+                title={queueFull ? `Queue full (${queueDepth}/${MAX_QUEUE}) — wait for a slot` : undefined}
                 style={{
                   padding: '5px 12px', borderRadius: 6, flexShrink: 0,
-                  background: (isRunning || createRun.isPending)
+                  background: queueFull
+                    ? 'rgba(239,68,68,0.3)'
+                    : createRun.isPending
                     ? 'rgba(42,157,143,0.3)'
                     : selectedTcIds.size === 0
                     ? 'rgba(42,157,143,0.15)'
                     : 'linear-gradient(135deg, #2A9D8F, #22d3ee)',
                   border: 'none',
-                  color: selectedTcIds.size === 0 ? 'rgba(255,255,255,0.4)' : 'white',
+                  color: (queueFull || selectedTcIds.size === 0) ? 'rgba(255,255,255,0.4)' : 'white',
                   fontSize: 11, fontWeight: 800,
-                  cursor: (isRunning || createRun.isPending || selectedTcIds.size === 0) ? 'not-allowed' : 'pointer',
+                  cursor: (queueFull || createRun.isPending || selectedTcIds.size === 0) ? 'not-allowed' : 'pointer',
                   fontFamily: 'var(--font-ui)', whiteSpace: 'nowrap', transition: 'all 0.2s',
                 }}
               >
-                {isRunning ? '⏳ Running…' : createRun.isPending ? '⏳ Starting…' : `▶ Run ${selectedTcIds.size}`}
+                {queueFull ? `⛔ Queue ${queueDepth}/${MAX_QUEUE}` : createRun.isPending ? '⏳ Starting…' : isRunning ? `▶ Run ${selectedTcIds.size} (+queue)` : `▶ Run ${selectedTcIds.size}`}
               </button>}
             </div>
 
@@ -637,7 +651,7 @@ export default function Execution() {
             onViewTc={handleViewTc}
             onDuplicateTc={handleDuplicateTc}
             onReorderTcs={handleReorderTcs}
-            isRunning={isRunning}
+            isRunning={queueFull}
           />
         </div>
 

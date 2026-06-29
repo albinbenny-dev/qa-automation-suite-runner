@@ -147,7 +147,7 @@ export default function Register() {
             textAlign: 'center',
           }}
         >
-          QA Infinity
+          QA Automation Suite Runner
         </h1>
 
         <p
@@ -267,7 +267,7 @@ export default function Register() {
                 marginTop: '4px',
               }}
             >
-              Join QA Infinity
+              Join QA Automation Suite Runner
             </h2>
             <p style={{ fontSize: '13px', color: 'var(--text-mid)', marginTop: '6px' }}>
               Set up your account to start automating.
@@ -447,7 +447,7 @@ export default function Register() {
                 textAlign: 'center',
               }}
             >
-              6D Technologies · QA Infinity
+              6D Technologies · QA Automation Suite Runner
             </p>
           </div>
         </div>
