@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction, RequestHandler } from 'express
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { z } from 'zod';
 import AdmZip from 'adm-zip';
 import { prisma } from '../lib/prisma.js';
@@ -778,13 +779,20 @@ router.post('/project-file/upload', requireProjectAccess as RequestHandler, proj
 
 // ── POST /import-folder — receive zip upload, extract, parse .robot files, auto-create test cases
 
-const folderUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
+const folderUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, os.tmpdir()),
+    filename: (_req, _file, cb) => cb(null, `import-${Date.now()}-${Math.random().toString(36).slice(2)}.zip`),
+  }),
+  limits: { fileSize: 100 * 1024 * 1024 },
+});
 
 router.post('/import-folder', requireProjectAccess as RequestHandler, folderUpload.single('folder'), async (req: Request, res: Response, next: NextFunction) => {
+  const tempZipPath = req.file?.path;
   try {
-    if (!req.file) { res.status(400).json({ error: 'A zip file is required (field: folder)' }); return; }
+    if (!req.file || !tempZipPath) { res.status(400).json({ error: 'A zip file is required (field: folder)' }); return; }
     const { slug, id: projectId } = req.project;
-    const zip = new AdmZip(req.file.buffer);
+    const zip = new AdmZip(tempZipPath);
     const entries = zip.getEntries();
     const scriptsRoot = process.env.SCRIPTS_ROOT ?? '/scripts';
 
@@ -925,7 +933,9 @@ router.post('/import-folder', requireProjectAccess as RequestHandler, folderUplo
     }
 
     res.json({ imported: results, warnings });
-  } catch (err) { next(err); }
+  } catch (err) { next(err); } finally {
+    if (tempZipPath) { try { fs.unlinkSync(tempZipPath); } catch {} }
+  }
 });
 
 export default router;

@@ -156,6 +156,9 @@ async function startDisplayPool() {
 async function startVncStack() {
   console.log('[qa-runner] Checking VNC stack on display ' + VNC_DISPLAY);
 
+  const vncPassword = process.env.VNC_PASSWORD || process.env.RUNNER_SECRET || null;
+  const vncAuthArgs = vncPassword ? ['-passwd', vncPassword] : ['-nopw'];
+
   const vncAlive = await checkPort(VNC_PORT);
   if (vncAlive) {
     console.log(`[qa-runner] x11vnc already listening on :${VNC_PORT} — skipping`);
@@ -163,7 +166,7 @@ async function startVncStack() {
     console.log('[qa-runner] Starting x11vnc');
     spawnLogged('x11vnc', [
       '-display', VNC_DISPLAY,
-      '-nopw',
+      ...vncAuthArgs,
       '-listen', 'localhost',
       '-rfbport', String(VNC_PORT),
       '-forever',
@@ -200,7 +203,7 @@ async function startVncStack() {
         console.log('[qa-runner] [watchdog] x11vnc down — restarting');
         spawnLogged('x11vnc', [
           '-display', VNC_DISPLAY,
-          '-nopw', '-listen', 'localhost',
+          ...vncAuthArgs, '-listen', 'localhost',
           '-rfbport', String(VNC_PORT),
           '-forever', '-shared', '-noxdamage',
         ]);
@@ -380,13 +383,16 @@ const server = http.createServer(async (req, res) => {
         ? slugResourcesDir
         : (fs.existsSync(cuidResourcesDir) ? cuidResourcesDir : null);
 
+      const copiedResourceFiles = [];
       if (resourcesSrcDir) {
         try {
           for (const rf of fs.readdirSync(resourcesSrcDir)) {
             if (rf === '.gitkeep') continue;
             const srcFile = path.join(resourcesSrcDir, rf);
             if (fs.statSync(srcFile).isFile()) {
-              fs.copyFileSync(srcFile, path.join(scriptDir, rf));
+              const destFile = path.join(scriptDir, rf);
+              fs.copyFileSync(srcFile, destFile);
+              copiedResourceFiles.push(destFile);
             }
           }
         } catch { /* non-fatal */ }
@@ -511,7 +517,10 @@ const server = http.createServer(async (req, res) => {
       if (!procDone && !proc.killed) {
         proc.kill('SIGTERM');
         const cancelKillTimer = setTimeout(() => { if (!proc.killed) proc.kill('SIGKILL'); }, 3000);
-        proc.once('close', () => clearTimeout(cancelKillTimer));
+        proc.once('close', () => {
+          clearTimeout(cancelKillTimer);
+          try { fs.rmSync(effectiveOutputDir, { recursive: true, force: true }); } catch {}
+        });
         clearTimeout(killTimer);
         clearInterval(heartbeatTimer);
         releaseOnce();
@@ -566,6 +575,11 @@ const server = http.createServer(async (req, res) => {
 
       // Release display back to pool
       releaseOnce();
+
+      // Clean up resource files copied into scriptDir for this run (DISK-011)
+      for (const f of copiedResourceFiles) {
+        try { fs.unlinkSync(f); } catch {}
+      }
 
       // ── Collect artifacts ──────────────────────────────────────────────
       const reportData = parseRobotXmlReport(xmlOutputPath);

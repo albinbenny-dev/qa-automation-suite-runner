@@ -28,6 +28,11 @@ class Semaphore {
   }
 }
 
+// Module-level semaphore caps total concurrent /run calls across all BullMQ jobs
+// so we never request more display slots than the runner pool has available (CONC-002).
+const MAX_RUNNER_DISPLAYS = parseInt(process.env.MAX_RUNNER_DISPLAYS ?? '8', 10);
+const runnerDisplaySem = new Semaphore(MAX_RUNNER_DISPLAYS);
+
 // ── Main job processor ─────────────────────────────────────────────────────
 async function processRunJob(job: Job<RunJobPayload>): Promise<void> {
   const { runId, runSeq, projectId, testCaseIds, scriptPaths, skippedTcIds = [],
@@ -396,12 +401,14 @@ async function spawnRunner(
   const controller = new AbortController();
   const fetchTimeout = setTimeout(() => controller.abort(), 960_000);
 
+  const onExternalAbort = () => controller.abort();
   if (externalSignal) {
     if (externalSignal.aborted) { controller.abort(); }
-    else { externalSignal.addEventListener('abort', () => controller.abort(), { once: true }); }
+    else { externalSignal.addEventListener('abort', onExternalAbort, { once: true }); }
   }
 
   try {
+    await runnerDisplaySem.acquire();
     const runnerHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
     if (process.env.RUNNER_SECRET) {
       runnerHeaders['x-runner-secret'] = process.env.RUNNER_SECRET;
@@ -487,10 +494,14 @@ async function spawnRunner(
     }
 
     clearTimeout(fetchTimeout);
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
+    runnerDisplaySem.release();
     const durationMs = Date.now() - start;
     return { exitCode, reportData, durationMs, screenshotPath: rfScreenshotPath, videoPath: rfVideoPath, videoPaths: rfVideoPaths, errorSnippet: rfErrorSnippet };
   } catch (err: unknown) {
     clearTimeout(fetchTimeout);
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
+    runnerDisplaySem.release();
     const durationMs = Date.now() - start;
     const message = err instanceof Error ? err.message : String(err);
     const isAbort = err instanceof Error && err.name === 'AbortError';
