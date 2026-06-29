@@ -145,6 +145,7 @@ services:
     volumes:
       - qaasr-scripts:/scripts
       - qaasr-artifacts:/artifacts
+    shm_size: '512m'
     extra_hosts:
       - "airtel6d-in-ventas-master-int-aavm-alpha-01.apps.ocplab.6d.local:10.0.12.244"
     healthcheck:
