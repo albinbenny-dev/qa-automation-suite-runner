@@ -5,7 +5,7 @@ import type { Run, RunResult, Schedule } from '../types';
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface RunListItem extends Omit<Run, 'results'> {
-  results: Pick<RunResult, 'status'>[];
+  results?: Pick<RunResult, 'status'>[];
   _count: { results: number };
 }
 

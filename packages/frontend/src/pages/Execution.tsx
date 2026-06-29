@@ -132,9 +132,10 @@ function JobQueuePanel({ runs, watchedRunId, onSelect }: {
         {runs.map(run => {
           const watched = watchedRunId === run.id;
           const trigMeta = TRIGGER_META[run.triggerType] ?? TRIGGER_META.MANUAL;
-          const passed  = run.results.filter(r => r.status === 'PASSED').length;
-          const failed  = run.results.filter(r => r.status === 'FAILED').length;
-          const skipped = run.results.filter(r => r.status === 'SKIPPED').length;
+          const results = run.results ?? [];
+          const passed  = results.filter(r => r.status === 'PASSED').length;
+          const failed  = results.filter(r => r.status === 'FAILED').length;
+          const skipped = results.filter(r => r.status === 'SKIPPED').length;
           const total   = run._count.results;
           const done    = passed + failed + skipped;
           const pct     = total > 0 ? Math.round((done / total) * 100) : 0;
