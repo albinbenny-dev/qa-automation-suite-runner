@@ -24,12 +24,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# ── Load .env if present ──────────────────────────────────────────────────────
+# ── Load only the two scaling vars from .env (avoids sourcing unsafe values) ──
 if [[ -f ".env" ]]; then
-  set -o allexport
-  # shellcheck disable=SC1091
-  source <(grep -E '^[A-Z_]+=.*' .env | grep -v '^#')
-  set +o allexport
+  _r=$(grep -E '^RUNNER_REPLICAS=' .env | tail -1 | cut -d= -f2 | tr -d '"' | tr -d "'")
+  _c=$(grep -E '^RUNNER_CONCURRENCY=' .env | tail -1 | cut -d= -f2 | tr -d '"' | tr -d "'")
+  [[ -n "$_r" ]] && RUNNER_REPLICAS="$_r"
+  [[ -n "$_c" ]] && RUNNER_CONCURRENCY="$_c"
 fi
 
 RUNNER_REPLICAS="${RUNNER_REPLICAS:-1}"
@@ -69,10 +69,15 @@ cat > "$NGINX_LB_CONF" <<EOF
 # Included by nginx.conf when RUNNER_REPLICAS > 1.
 upstream qaasr_runners {
     least_conn;
-$(printf '%b' "$UPSTREAM_SERVERS")}
+$(printf '%b' "$UPSTREAM_SERVERS")
+}
 
 server {
     listen 8081;
+
+    # Use Docker's internal DNS resolver so upstream hostnames are re-resolved
+    # at request time rather than at nginx startup (avoids "host not found" on boot).
+    resolver 127.0.0.11 valid=10s;
 
     # /runner-lb proxies to the upstream runner pool.
     # The API sends POST /run here; nginx routes to the least-loaded runner.
@@ -93,16 +98,44 @@ EOF
 ok "nginx/runner-lb.conf written ($RUNNER_REPLICAS upstream servers)"
 
 # ── Build the services block ─────────────────────────────────────────────────
+# Write full service definitions (not extends) so each replica gets only its
+# own noVNC port binding without inheriting the base 6080 port.
 SERVICES_BLOCK=""
 for i in $(seq 1 "$RUNNER_REPLICAS"); do
+  NOVNC_HOST_PORT=$((6079 + i))
   SERVICES_BLOCK="${SERVICES_BLOCK}
   qaasr-runner-${i}:
-    extends:
-      file: docker-compose.yml
-      service: qaasr-runner
+    image: qaasr-runner:latest
     container_name: qaasr-runner-${i}
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Kolkata
+      - API_URL=http://qaasr-api:4000
+      - SE_AVOID_STATS=true
+      - RUNNER_CONCURRENCY=${RUNNER_CONCURRENCY}
+    depends_on:
+      qaasr-api:
+        condition: service_healthy
     ports:
-      - \"127.0.0.1:$((6079 + i)):6080\"
+      - \"127.0.0.1:${NOVNC_HOST_PORT}:6080\"
+    volumes:
+      - qaasr-scripts:/scripts
+      - qaasr-artifacts:/artifacts
+    shm_size: '512m'
+    healthcheck:
+      test: [\"CMD\", \"curl\", \"-f\", \"http://localhost:5001/health\"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+        reservations:
+          memory: 512m
+    networks:
+      - qaasr-net
 "
 done
 
@@ -126,11 +159,13 @@ $(printf '%s' "$SERVICES_BLOCK")
   # ── API: point RUNNER_URL at nginx runner-lb ─────────────────────────────
   qaasr-api:
     environment:
-      - RUNNER_URL=http://qaasr-nginx:8081
-      - RUNNER_PRIMARY_URL=http://qaasr-nginx:8081
+      - RUNNER_URL=http://qaasr-ui:8081
+      - RUNNER_PRIMARY_URL=http://qaasr-ui:8081
 
-  # ── Nginx: mount runner-lb.conf ──────────────────────────────────────────
-  qaasr-nginx:
+  # ── Nginx (qaasr-ui): mount runner-lb.conf + wait for runners to start ──
+  qaasr-ui:
+    depends_on:
+$(for i in $(seq 1 "$RUNNER_REPLICAS"); do echo "      qaasr-runner-${i}:"; echo "        condition: service_started"; done)
     volumes:
       - ./nginx/runner-lb.conf:/etc/nginx/conf.d/runner-lb.conf:ro
 EOF
