@@ -88,6 +88,7 @@ router.get('/', verifyToken as RequestHandler, async (req: Request, res: Respons
         _count: {
           select: {
             testCases: true,
+            scripts: true,
             tcItems: true,
             members: true,
             runs: true,

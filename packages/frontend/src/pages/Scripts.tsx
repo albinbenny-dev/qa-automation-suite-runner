@@ -23,6 +23,7 @@ import {
   useUploadProjectFile,
   useCreateProjectFolder,
   downloadProjectFile,
+  downloadProjectZip,
   type FileTreeNode,
 } from '../hooks/useScripts';
 import { useSaveResource } from '../hooks/useResources';
@@ -1307,6 +1308,15 @@ export default function Scripts() {
                   title="Refresh"
                 >⟳</button>
                 <button
+                  onClick={() => downloadProjectZip(projectId ?? '')}
+                  style={{
+                    padding: '6px 8px', background: 'rgba(34,211,238,0.08)',
+                    border: '1px solid rgba(34,211,238,0.3)', borderRadius: 5,
+                    cursor: 'pointer', color: 'var(--cyan)', fontSize: 11, fontWeight: 700,
+                  }}
+                  title="Download all project files as zip"
+                >↓ All</button>
+                <button
                   onClick={() => {
                     setShowSearch(v => {
                       if (v) { setSearchQuery(''); setSearchResults([]); }
@@ -1511,8 +1521,11 @@ export default function Scripts() {
                                   <button onClick={(e) => { e.stopPropagation(); deleteProjectFile.mutateAsync(node.path).then(() => { setDeletingFilePath(null); toast.success('Deleted'); }).catch(() => toast.error('Delete failed')); }} style={{ ...BTN(), color: 'var(--rose)', fontWeight: 700, fontSize: 9, border: '1px solid rgba(220,38,38,0.3)', background: 'rgba(220,38,38,0.1)' }}>Yes</button>
                                   <button onClick={(e) => { e.stopPropagation(); setDeletingFilePath(null); }} style={{ ...BTN(), border: '1px solid var(--border)', fontSize: 9 }}>No</button>
                                 </span>
-                              ) : canWrite && (
-                                <button onClick={(e) => { e.stopPropagation(); setDeletingFilePath(node.path); }} style={BTN()} title="Delete folder">✕</button>
+                              ) : (
+                                <span style={{ display: 'flex', gap: 1, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                                  <button onClick={(e) => { e.stopPropagation(); downloadProjectZip(projectId ?? '', node.path); }} style={BTN({ color: 'var(--cyan)' })} title="Download folder as zip">↓</button>
+                                  {canWrite && <button onClick={(e) => { e.stopPropagation(); setDeletingFilePath(node.path); }} style={BTN()} title="Delete folder">✕</button>}
+                                </span>
                               )}
                             </div>
                             {open && node.children?.map(c => renderNode(c, depth + 1))}

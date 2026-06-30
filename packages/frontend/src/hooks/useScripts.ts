@@ -210,14 +210,38 @@ export function useUploadProjectFile(projectId: string) {
   });
 }
 
+export function downloadProjectZip(projectId: string, relPath?: string): void {
+  api
+    .get(`/projects/${projectId}/scripts/project-file/download-zip`, {
+      params: relPath ? { path: relPath } : {},
+      responseType: 'blob',
+    })
+    .then((res) => {
+      const url = URL.createObjectURL(res.data as Blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (relPath ? relPath.split('/').pop() : projectId) + '.zip';
+      a.click();
+      URL.revokeObjectURL(url);
+    })
+    .catch(() => {});
+}
+
 export function downloadProjectFile(projectId: string, relPath: string): void {
-  const url = `/api/projects/${projectId}/scripts/project-file/download?path=${encodeURIComponent(relPath)}`;
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = relPath.split('/').pop() ?? relPath;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  api
+    .get(`/projects/${projectId}/scripts/project-file/download`, {
+      params: { path: relPath },
+      responseType: 'blob',
+    })
+    .then((res) => {
+      const url = URL.createObjectURL(res.data as Blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = relPath.split('/').pop() ?? relPath;
+      a.click();
+      URL.revokeObjectURL(url);
+    })
+    .catch(() => {});
 }
 
 export function useCreateProjectFolder(projectId: string) {

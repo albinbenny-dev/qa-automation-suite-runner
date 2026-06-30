@@ -616,6 +616,14 @@ const server = http.createServer(async (req, res) => {
         console.error(`[qa-runner] artifact scan error: ${scanErr.message}`);
       }
 
+      // If QAASR didn't record (videoEnabled=false) but robot wrote an .mp4 (e.g. VideoRecorder.py), pick it up
+      if (!videoPath) {
+        try {
+          const mp4s = fs.readdirSync(effectiveOutputDir).filter(f => /\.mp4$/i.test(f));
+          if (mp4s.length > 0) videoPath = path.join(effectiveOutputDir, mp4s[0]);
+        } catch {}
+      }
+
       sendLine({ type: 'done', exitCode: exitCode ?? 1, reportData, screenshotPath, videoPath, errorSnippet: errorLines || null });
       try { res.end(); } catch { /* socket already gone */ }
     });

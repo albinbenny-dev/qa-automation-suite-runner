@@ -41,7 +41,7 @@ RUN pip install --no-cache-dir \
     openpyxl \
     pyyaml \
     mss \
-    imageio \
+    imageio[ffmpeg] \
     numpy
 
 # ── Custom CA certificates (e.g. internal OCP/lab environments) ──────────────

@@ -676,6 +676,37 @@ router.get('/project-file/download', requireProjectAccess as RequestHandler, asy
   } catch (err) { next(err); }
 });
 
+// GET /project-file/download-zip?path=<relative-folder>  (omit path = entire project)
+router.get('/project-file/download-zip', requireProjectAccess as RequestHandler, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { slug } = req.project;
+    const relPath = (req.query['path'] as string | undefined) ?? '';
+    const absTarget = relPath ? resolveProjectPath(slug, relPath) : path.resolve(path.join('/scripts', slug));
+    if (!fs.existsSync(absTarget) || !fs.statSync(absTarget).isDirectory()) {
+      res.status(404).json({ error: 'Folder not found' }); return;
+    }
+    const zip = new AdmZip();
+    const addDir = (dir: string, zipBase: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        const zipPath = zipBase ? `${zipBase}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          addDir(full, zipPath);
+        } else {
+          zip.addLocalFile(full, zipBase || '');
+        }
+      }
+    };
+    addDir(absTarget, '');
+    const zipName = (relPath ? path.basename(relPath) : slug) + '.zip';
+    const buf = zip.toBuffer();
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+    res.setHeader('Content-Length', buf.length);
+    res.send(buf);
+  } catch (err) { next(err); }
+});
+
 // POST /project-file/move  { from: string, to: string }
 router.post('/project-file/move', requireProjectAccess as RequestHandler, async (req: Request, res: Response, next: NextFunction) => {
   try {

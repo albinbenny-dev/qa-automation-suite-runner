@@ -144,7 +144,7 @@ services:
       qaasr-api:
         condition: service_healthy
     ports:
-      - "127.0.0.1:6080:6080"
+      - "${VNC_HOST:-127.0.0.1}:6080:6080"
     volumes:
       - qaasr-scripts:/scripts
       - qaasr-artifacts:/artifacts

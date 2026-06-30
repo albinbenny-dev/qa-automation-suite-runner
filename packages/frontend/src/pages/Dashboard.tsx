@@ -644,33 +644,50 @@ export default function Dashboard() {
           </div>
         ) : (
           <>
-            {/* ── 5-up stat tiles ───────────────────────────────────────── */}
-            <div style={{ display: 'flex', gap: 12 }}>
-              <StatTile
-                label="Total Tests"
-                value={stats?.totalTests ?? 0}
-                accent="linear-gradient(90deg, var(--cyan), #2563AB)"
-              />
-              <StatTile
-                label="Last Run Pass"
-                value={stats?.lastRunPassCount ?? 0}
-                accent="linear-gradient(90deg, var(--pass), #1a7a6e)"
-              />
-              <StatTile
-                label="Last Run Failures"
-                value={stats?.lastRunFailCount ?? 0}
-                accent="linear-gradient(90deg, var(--fail), #b91c1c)"
-              />
-              <StatTile
-                label="Scheduled Runs"
-                value={stats?.activeSchedules ?? 0}
-                accent="linear-gradient(90deg, var(--skip), #D9601A)"
-              />
-              <StatTile
-                label="Scripts Generated"
-                value={stats?.scriptsGenerated ?? 0}
-                accent="linear-gradient(90deg, var(--violet), #7c3aed)"
-              />
+            {/* ── Automation overview row ───────────────────────────────── */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 12 }}>
+              {/* Total test cases */}
+              <StatTile label="Total Test Cases" value={stats?.totalTests ?? 0} accent="var(--cyan)" />
+
+              {/* Automation scope */}
+              <StatTile label="Automation Scope" value={stats?.automationScope ?? 0} accent="var(--violet)" />
+
+              {/* Scripts done */}
+              <StatTile label="Scripts Done" value={stats?.scriptsDone ?? 0} accent="var(--pass)" />
+
+              {/* Automation % with progress bar */}
+              <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px', position: 'relative', overflow: 'hidden', boxShadow: 'var(--shadow-card)' }}>
+                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: 'var(--amber)', borderRadius: '10px 10px 0 0' }} />
+                <div style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4, marginTop: 4 }}>Automation %</div>
+                <div style={{ fontSize: 28, fontWeight: 800, color: '#F47B20', lineHeight: 1, marginBottom: 8 }}>{stats?.automationPct ?? 0}%</div>
+                <div style={{ height: 5, background: 'var(--surface2)', borderRadius: 99, overflow: 'hidden' }}>
+                  <div style={{ width: `${stats?.automationPct ?? 0}%`, height: '100%', background: 'var(--pass)', borderRadius: 99, transition: 'width 0.4s ease' }} />
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 5 }}>{stats?.scriptsDone ?? 0} of {stats?.automationScope ?? 0} in scope</div>
+              </div>
+
+              {/* Automation status */}
+              <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px', position: 'relative', overflow: 'hidden', boxShadow: 'var(--shadow-card)' }}>
+                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: 'var(--cool-accent)', borderRadius: '10px 10px 0 0' }} />
+                <div style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 8, marginTop: 4 }}>Automation Status</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--pass)', flexShrink: 0 }} />
+                    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--pass)' }}>{stats?.automationPassed ?? 0}</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>passed</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--fail)', flexShrink: 0 }} />
+                    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--fail)' }}>{stats?.automationFailed ?? 0}</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>failed</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--border)', flexShrink: 0 }} />
+                    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-dim)' }}>{stats?.automationNotRun ?? 0}</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>not run</span>
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* ── 3-column dash grid ────────────────────────────────────── */}

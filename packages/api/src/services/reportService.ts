@@ -47,6 +47,13 @@ export interface ProjectStats {
   activeSchedules: number;
   pendingHeals: number;
   flakyTests: FlakyTest[];
+  // automation overview row
+  automationScope: number;
+  scriptsDone: number;
+  automationPct: number;
+  automationPassed: number;
+  automationFailed: number;
+  automationNotRun: number;
 }
 
 export interface FlakyTest {
@@ -161,9 +168,10 @@ export async function generateReport(runId: string): Promise<void> {
 // ── getProjectStats ────────────────────────────────────────────────────────
 
 export async function getProjectStats(projectId: string): Promise<ProjectStats> {
-  const [totalTests, scriptsGenerated, totalRuns, activeSchedules, lastRun, allResults] =
+  const [totalTests, scriptsGenerated, totalRuns, activeSchedules, lastRun, allResults, automationScopeCount, scriptsDoneCount, latestResultPerTc] =
     await Promise.all([
-      prisma.testCase.count({ where: { projectId } }),
+      // Total TCs = TcItem count (TC Library rows)
+      prisma.tcItem.count({ where: { projectId } }),
       prisma.script.count({ where: { projectId } }),
       prisma.run.count({ where: { projectId } }),
       prisma.schedule.count({ where: { projectId, isActive: true } }),
@@ -181,6 +189,20 @@ export async function getProjectStats(projectId: string): Promise<ProjectStats> 
         select: { testCaseId: true, status: true, createdAt: true },
         orderBy: { createdAt: 'desc' },
         take: 5000,
+      }),
+      // Automation scope = TcItems marked IN_SCOPE
+      prisma.tcItem.count({ where: { projectId, automationStatus: 'IN_SCOPE' } }),
+      // Scripts done = TcItems with a linked script
+      prisma.tcItem.count({ where: { projectId, linkedScriptId: { not: null } } }),
+      // Latest run result per linked script (TcItems that have a script)
+      prisma.runResult.findMany({
+        where: {
+          run: { projectId },
+          testCase: { tcItems: { some: { projectId } } },
+        },
+        select: { testCaseId: true, status: true, createdAt: true },
+        orderBy: { createdAt: 'desc' },
+        distinct: ['testCaseId'],
       }),
     ]);
 
@@ -251,6 +273,11 @@ export async function getProjectStats(projectId: string): Promise<ProjectStats> 
     });
   }
 
+  const automationPassed = latestResultPerTc.filter((r) => r.status === 'PASSED').length;
+  const automationFailed = latestResultPerTc.filter((r) => r.status === 'FAILED').length;
+  const automationNotRun = Math.max(0, automationScopeCount - latestResultPerTc.length);
+  const automationPct = automationScopeCount > 0 ? Math.round((scriptsDoneCount / automationScopeCount) * 100) : 0;
+
   return {
     totalTests,
     scriptsGenerated,
@@ -261,6 +288,12 @@ export async function getProjectStats(projectId: string): Promise<ProjectStats> 
     activeSchedules,
     pendingHeals: 0,
     flakyTests,
+    automationScope: automationScopeCount,
+    scriptsDone: scriptsDoneCount,
+    automationPct,
+    automationPassed,
+    automationFailed,
+    automationNotRun,
   };
 }
 

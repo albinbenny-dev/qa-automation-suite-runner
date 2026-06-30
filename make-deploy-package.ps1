@@ -179,7 +179,8 @@ DB dump lines        : $dumpLines
 Restore instructions:
   1. SCP this folder to the target Linux server
   2. cd prod-deploy
-  3. cp config/.env.example config/.env  and fill in all secrets
+  3. If first deploy: cp config/.env.example config/.env  and fill in all secrets
+     If upgrading: merge any NEW keys from config/.env.example into existing .env
   4. chmod +x restore.sh
   5. sudo ./restore.sh
 "@ | Out-File -FilePath "$dest\manifest.txt" -Encoding utf8
